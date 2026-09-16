@@ -75,8 +75,65 @@ Tests (no Docker needed — pglite is in-memory):
 npm run typecheck && npm run lint && npm test && npm run build
 ```
 
-30 test files / 171 tests. Includes real git-worktree/branch/commit/push plumbing against
-throwaway scratch repos (never a real project), and a full orchestrator wiring test.
+## Configuring `work-agent.config.json`
+
+Every field is keyed by Jira project key or `"owner/repo"` — nothing is inferred, an unmapped
+project always means "stop and ask" (see above). This file is per-person and gitignored on
+purpose (`work-agent.config.json.example` is what actually ships) — your local clone paths and
+test accounts aren't the same as a teammate's. Here's what each field is for, with a worked
+example:
+
+- **`github.approvedRepos`** — an explicit allowlist. A repo not in this array is never touched
+  by Engineering Execution, even if `repoMap` below resolves to it. You opt in per repo, on
+  purpose — nothing is ever inferred from "a ticket looked like it belonged here."
+  ```json
+  "approvedRepos": ["your-org/your-repo"]
+  ```
+
+- **`github.repoMap`** — Jira project key → `"owner/repo"`. How a ticket like `PROJ-56` gets
+  matched to an actual GitHub repo.
+  ```json
+  "repoMap": { "PROJ": "your-org/your-repo" }
+  ```
+
+- **`github.repoLocalPaths`** — `"owner/repo"` → where that repo is cloned **on your own
+  machine**. This is exactly why the file is per-person: your clone lives somewhere different
+  from a teammate's.
+  ```json
+  "repoLocalPaths": { "your-org/your-repo": "/Users/you/code/your-repo" }
+  ```
+
+- **`github.repoDefaultBranches`** — only needed if it isn't `main`.
+  ```json
+  "repoDefaultBranches": { "your-org/your-repo": "main" }
+  ```
+
+- **`github.previewRecipes`** *(optional)* — how to boot that repo's own dev server for the
+  Engineering Execution screenshot/GIF step. You can leave this out entirely: it auto-detects
+  from the repo's own `package.json` (`npm run dev`, port 3000). You only need an entry here to
+  override the command/port, to disable it for one repo (`"your-org/your-repo": false`), or to
+  add a test-login for an app that requires signing in:
+  ```json
+  "previewRecipes": {
+    "your-org/your-repo": {
+      "startCommand": ["npm", "run", "dev"],
+      "port": 3000,
+      "readyPath": "/",
+      "testLogin": {
+        "emailSelector": "input[name=\"email\"]",
+        "email": "your-test-account@example.com",
+        "submitSelector": "text=Sign in (test)"
+      }
+    }
+  }
+  ```
+  `testLogin` only applies to an app with its own dev-mode auth bypass (like op-intelligence's
+  "Test Environment Bypass" on `/login`) — give it the real selector and a real test account your
+  app actually accepts, so the implementer never has to guess at one blind.
+
+- **`jira.myProjects`** and **`slack.relevantChannels`** — reserved for future filtering; safe to
+  leave as `[]`. Observation already pulls every ticket assigned to you and every Slack message
+  that mentions you or links to one of your tickets, with no allowlist required.
 
 ## What's NOT wired to run unattended, and why
 
