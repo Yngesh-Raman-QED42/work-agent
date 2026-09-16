@@ -65,7 +65,11 @@ export async function runPipeline(
   await audit.log('briefing_generated', { run_date: runDate });
 
   const queue = generateApprovalEntries(items);
-  await new ApprovalsStore(db).fileMany(queue);
+  const approvalsStore = new ApprovalsStore(db);
+  await approvalsStore.fileMany(queue);
+  // Drop any previously-filed observation approval whose condition no
+  // longer holds (e.g. a PR has since been opened) — see reconcile()'s doc.
+  await approvalsStore.reconcile('observation', queue.map((q) => q.id));
   await audit.log('approval_queue_generated', { count: queue.length });
 
   await audit.log('run_completed', {});

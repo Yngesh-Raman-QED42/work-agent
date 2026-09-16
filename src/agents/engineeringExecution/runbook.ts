@@ -306,7 +306,7 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
     action: 'log_execution_time',
     target: task.key,
     targetUrl: task.url,
-    context: { taskKey: task.key, minutes: elapsedMinutes },
+    context: { taskKey: task.key, minutes: elapsedMinutes, taskSummary: task.summary, workSummary: outcome.summary, prUrl },
     reasoning: `Work Agent spent ${formatMinutes(elapsedMinutes)} autonomously implementing this ticket (worktree creation through draft PR) — real elapsed time, not an estimate.`,
     riskLevel: 'low',
     consequenceIfApproved: `Logs ${formatMinutes(elapsedMinutes)} as a real Jira worklog on ${task.key}, visible on your timesheet.`,

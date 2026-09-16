@@ -22,16 +22,41 @@ export interface ExecuteApprovalDeps {
 export async function executeApprovedAction(db: AnyDb, approval: ApprovalRow, deps: ExecuteApprovalDeps): Promise<void> {
   if (approval.action !== 'log_execution_time') return;
 
-  const context = approval.context as { taskKey?: string; minutes?: number };
-  const { taskKey, minutes } = context;
+  const context = approval.context as {
+    taskKey?: string;
+    minutes?: number;
+    taskSummary?: string;
+    workSummary?: string;
+    prUrl?: string;
+  };
+  const { taskKey, minutes, taskSummary, workSummary, prUrl } = context;
   if (!taskKey || !minutes || minutes <= 0) {
     throw new Error(`log_execution_time approval ${approval.id} has invalid context: ${JSON.stringify(approval.context)}`);
   }
 
+  // taskSummary/workSummary/prUrl are only present on approvals filed by
+  // this run of Work Agent — older pending rows filed before this context
+  // was added fall back to a plain comment rather than throwing.
+  const comment = [
+    `Work Agent autonomously implemented this ticket${taskSummary ? `: ${taskSummary}` : ''}.`,
+    workSummary ? `Summary of changes: ${workSummary}.` : null,
+    prUrl ? `PR: ${prUrl}` : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  // The ad-hoc `log-time --jira` path always passes an explicit `date`
+  // (see cli.ts); this path used to omit it entirely, leaving Jira's
+  // "started" field unset on the worklog it wrote — the one concrete
+  // difference between the two, and the first thing worth ruling out if a
+  // worklog appears on the Jira issue but not in a same-day board/mirror
+  // sync elsewhere. Pin both writes to the same explicit date so the two
+  // paths are identical in every way that could matter.
+  const date = new Date().toISOString().slice(0, 10);
   const writer = deps.getWorklogWriter();
-  await writer.logWork(taskKey, minutes, { comment: 'Logged by Work Agent — autonomous implementation time' });
+  await writer.logWork(taskKey, minutes, { comment, date });
   await logTime(db, {
-    date: new Date().toISOString().slice(0, 10),
+    date,
     minutes,
     jiraKey: taskKey,
     note: 'Autonomous execution time (Jira worklog)',

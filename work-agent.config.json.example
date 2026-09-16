@@ -19,7 +19,7 @@
         "startCommand": ["npm", "run", "dev"],
         "port": 3000,
         "readyPath": "/",
-        "readyTimeoutMs": 30000,
+        "readyTimeoutMs": 120000,
         "env": {},
         "testLogin": {
           "emailSelector": "input[name=\"email\"]",

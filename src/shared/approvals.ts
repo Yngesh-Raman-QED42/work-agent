@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, notInArray } from 'drizzle-orm';
 import type { AnyDb } from '../db/index.js';
 import { approvals } from '../db/schema.js';
 
@@ -49,6 +49,25 @@ export class ApprovalsStore {
 
   async fileMany(entries: ApprovalInput[]): Promise<void> {
     for (const entry of entries) await this.file(entry);
+  }
+
+  /**
+   * Observation-sourced approvals (e.g. "no PR linked yet") are pure
+   * recomputations of current state, refiled every pipeline run — but
+   * refiling only ever adds/refreshes, it never removes one whose condition
+   * has since stopped being true (a PR got opened, a review got resolved).
+   * Left alone, a stale one sits in "needs your decision" forever. Call
+   * this right after fileMany with the ids that source just proposed —
+   * anything still pending for that source but NOT in that list has
+   * nothing left to say and is deleted outright, not marked rejected (no
+   * human ever actually rejected it).
+   */
+  async reconcile(source: string, currentIds: string[]): Promise<void> {
+    const condition =
+      currentIds.length > 0
+        ? and(eq(approvals.source, source), eq(approvals.status, 'pending'), notInArray(approvals.id, currentIds))
+        : and(eq(approvals.source, source), eq(approvals.status, 'pending'));
+    await this.db.delete(approvals).where(condition);
   }
 
   async listPending(): Promise<ApprovalRow[]> {

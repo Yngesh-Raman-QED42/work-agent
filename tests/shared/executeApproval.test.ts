@@ -40,18 +40,44 @@ describe('executeApprovedAction', () => {
     expect(writer.logged).toEqual([]);
   });
 
-  it('writes a Jira worklog and a matching local time entry for log_execution_time', async () => {
+  it('writes a Jira worklog (with an explicit date, matching the ad-hoc log-time path) and a matching local time entry', async () => {
     handle = await createTestDb();
     const writer = new MockJiraWorklogWriter();
     await executeApprovedAction(handle.db, makeApproval(), { getWorklogWriter: () => writer });
 
-    expect(writer.logged).toEqual([{ key: 'PROJ-1', minutes: 42, comment: 'Logged by Work Agent — autonomous implementation time' }]);
-
     const today = new Date().toISOString().slice(0, 10);
+    expect(writer.logged).toEqual([
+      { key: 'PROJ-1', minutes: 42, comment: 'Work Agent autonomously implemented this ticket.', date: today },
+    ]);
+
     const entries = await timeEntriesInRange(handle.db, today, today);
     expect(entries).toHaveLength(1);
     expect(entries[0]!.jiraKey).toBe('PROJ-1');
     expect(entries[0]!.minutes).toBe(42);
+  });
+
+  it('builds a contextual worklog comment from the ticket summary, work summary, and PR url when present', async () => {
+    handle = await createTestDb();
+    const writer = new MockJiraWorklogWriter();
+    await executeApprovedAction(
+      handle.db,
+      makeApproval({
+        context: {
+          taskKey: 'PROJ-1',
+          minutes: 42,
+          taskSummary: 'Fix overlapping allocation labels',
+          workSummary: 'Added bg-surface-muted to the sticky label div',
+          prUrl: 'https://github.com/org/repo/pull/62',
+        },
+      }),
+      { getWorklogWriter: () => writer },
+    );
+
+    expect(writer.logged[0]!.comment).toBe(
+      'Work Agent autonomously implemented this ticket: Fix overlapping allocation labels. ' +
+        'Summary of changes: Added bg-surface-muted to the sticky label div. ' +
+        'PR: https://github.com/org/repo/pull/62',
+    );
   });
 
   it('never constructs the worklog writer for a non-matching action', async () => {

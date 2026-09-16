@@ -60,6 +60,7 @@ cp .env.example .env
 cp work-agent.config.json.example work-agent.config.json   # then fill in your own project/repo mapping
 npx drizzle-kit generate       # only after a schema change
 npm run db:migrate
+npm link                       # one-time — makes the `work-agent` command below actually resolve
 
 npm run cli run                        # observation cycle (mock mode by default)
 npm run cli status                     # pending-approval counts
@@ -70,8 +71,9 @@ npm run cli weekly-summary
 npm run dashboard                      # http://localhost:4180, read-only
 npm run scheduler                      # NOT started automatically — see below
 
-npm run cli exec-start <TICKET_KEY>    # Engineering Execution, part 1 — see "Working a ticket" below
-npm run cli exec-finish <TICKET_KEY> --summary "..."   # part 2, after you've implemented it
+work-agent exec-start <TICKET_KEY>     # Engineering Execution, part 1 — see "Working a ticket" below
+work-agent exec-finish <TICKET_KEY> --summary "..."    # part 2, after you've implemented it
+# (equivalently: npm run cli -- exec-start <TICKET_KEY>, if you skipped npm link)
 ```
 
 ### Working a ticket — exec-start / exec-finish, not a hand-run checklist
@@ -165,6 +167,14 @@ example:
   `testLogin` only applies to an app with its own dev-mode auth bypass (like op-intelligence's
   "Test Environment Bypass" on `/login`) — give it the real selector and a real test account your
   app actually accepts, so the implementer never has to guess at one blind.
+  `readyTimeoutMs` (default 60s when auto-detected) is how long to wait for the dev server to come
+  up before giving up on screenshots for that run. Every worktree is a cold checkout with no build
+  cache of its own (no `.next`, no `.turbo` — same reason `node_modules` needs handling; see
+  `WorktreeManager.ensureDependencies`), so a framework's very first compile in a fresh worktree is
+  often much slower than the same app already running in your primary checkout. Set this generously
+  (2+ minutes for a real Next.js app) — too low and every screenshot attempt fails with "dev server
+  did not become ready," never a partial/blurry capture, since `runChecks`/the PR itself are
+  unaffected either way (screenshot failure is always best-effort, never gates the PR).
 
 - **`jira.ignoredKeys`** — the one deliberate exception to "everything assigned to you shows up."
   Every ticket assigned to you appears on the dashboard by default, with no allowlist — this is

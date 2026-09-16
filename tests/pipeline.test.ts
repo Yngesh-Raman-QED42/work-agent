@@ -3,8 +3,9 @@ import { createTestDb, type TestDbHandle } from '../src/test-utils/db.js';
 import { runPipeline } from '../src/pipeline/run.js';
 import { MockSlackConnector } from '../src/integrations/slack/mock.js';
 import { MockJiraConnector } from '../src/integrations/jira/mock.js';
-import { MockGitHubConnector } from '../src/integrations/github/mock.js';
+import { MockGitHubConnector, defaultFixturePrs } from '../src/integrations/github/mock.js';
 import { AuditLog } from '../src/pipeline/audit.js';
+import { ApprovalsStore } from '../src/shared/approvals.js';
 
 let handle: TestDbHandle | null = null;
 afterEach(async () => {
@@ -85,6 +86,38 @@ describe('runPipeline (end to end, mocked connectors)', () => {
     await runPipeline(handle.db, mockConnectors(), { runDate: '2026-09-09', ignoredKeys: ['QED42OPSIN-59'] });
     const collected = (await new AuditLog(handle.db).readAll()).find((e) => e.event === 'collected_jira');
     expect((collected!.details as { ignored: number }).ignored).toBe(1);
+  });
+
+  it('a "no PR linked yet" approval disappears once a PR shows up for that ticket on a later run', async () => {
+    handle = await createTestDb();
+    const first = await runPipeline(handle.db, mockConnectors(), { runDate: '2026-09-09' });
+    // QGP-463 (Backlog, no PR in the default fixture) should have proposed this.
+    expect(first.approvalQueue.some((a) => a.id === 'start-pr:QGP-463')).toBe(true);
+    expect((await new ApprovalsStore(handle.db).get('start-pr:QGP-463'))?.status).toBe('pending');
+
+    const prsWithFollowUp = [
+      ...defaultFixturePrs(),
+      {
+        repo: 'qed42/operational-intelligence',
+        number: 200,
+        title: 'QGP-463: kick off MVP scaffolding',
+        url: 'https://github.com/qed42/operational-intelligence/pull/200',
+        state: 'open' as const,
+        isDraft: false,
+        branch: 'work-agent/qgp-463',
+        isAuthor: true,
+        reviewRequestedOfMe: false,
+        reviewState: 'none' as const,
+        updatedAt: '2026-09-10T09:00:00+05:30',
+      },
+    ];
+    await runPipeline(
+      handle.db,
+      { slack: mockConnectors().slack, jira: mockConnectors().jira, github: new MockGitHubConnector(prsWithFollowUp) },
+      { runDate: '2026-09-10' },
+    );
+
+    expect(await new ApprovalsStore(handle.db).get('start-pr:QGP-463')).toBeUndefined();
   });
 
   it('ignores nothing by default — an unrelated key in the list has no effect', async () => {
