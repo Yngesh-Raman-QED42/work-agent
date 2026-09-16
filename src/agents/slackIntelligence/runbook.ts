@@ -1,3 +1,4 @@
+import { notInArray } from 'drizzle-orm';
 import type { AnyDb } from '../../db/index.js';
 import { slackSignals } from '../../db/schema.js';
 import { AuditLog } from '../../pipeline/audit.js';
@@ -38,6 +39,14 @@ export async function runSlackIntelligence(db: AnyDb, messages: SlackMessage[]):
       })
       .onConflictDoUpdate({ target: slackSignals.id, set: { category: c.category, linkedJiraKey: c.linkedJiraKey } });
   }
+  // `messages` is every relevant message in the current lookback window —
+  // authoritative for "what's current" the same way work_items treats each
+  // pipeline run's fetch. Without this, a signal scrolls out of that window
+  // (resolved, or just aged past 24h) but its row never goes away: it sits
+  // on the dashboard looking exactly as "current" a week later as it did
+  // the day it was filed.
+  const currentIds = persisted.map((c) => `${c.message.channel}:${c.message.ts}`);
+  await db.delete(slackSignals).where(currentIds.length > 0 ? notInArray(slackSignals.id, currentIds) : undefined);
   await audit.log('slack_intelligence_persisted', { count: persisted.length });
 
   const summary = buildSummary(classifications);

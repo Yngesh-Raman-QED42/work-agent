@@ -44,4 +44,26 @@ describe('runSlackIntelligence', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.category).toBe('task_assignment');
   });
+
+  it('removes a signal on the next run once it is no longer in the fetched window — never stays "current" forever', async () => {
+    handle = await createTestDb();
+    await runSlackIntelligence(handle.db, [makeMsg('@you can you take this one?', true, '1.0')]);
+    expect(await handle.db.query.slackSignals.findMany()).toHaveLength(1);
+
+    // Next run's 24h fetch no longer includes that message at all (it aged
+    // out, or got resolved) — a fresh message is the only thing persisted.
+    await runSlackIntelligence(handle.db, [makeMsg('@you new thing, can you take this?', true, '2.0')]);
+    const rows = await handle.db.query.slackSignals.findMany();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.id).toBe('C1:2.0');
+  });
+
+  it('clears every persisted signal when a run finds nothing relevant at all', async () => {
+    handle = await createTestDb();
+    await runSlackIntelligence(handle.db, [makeMsg('@you can you take this one?', true)]);
+    expect(await handle.db.query.slackSignals.findMany()).toHaveLength(1);
+
+    await runSlackIntelligence(handle.db, [makeMsg('lunch at 1pm?')]);
+    expect(await handle.db.query.slackSignals.findMany()).toHaveLength(0);
+  });
 });

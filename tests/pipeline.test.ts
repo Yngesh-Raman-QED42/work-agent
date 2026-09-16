@@ -6,6 +6,7 @@ import { MockJiraConnector } from '../src/integrations/jira/mock.js';
 import { MockGitHubConnector, defaultFixturePrs } from '../src/integrations/github/mock.js';
 import { AuditLog } from '../src/pipeline/audit.js';
 import { ApprovalsStore } from '../src/shared/approvals.js';
+import { executionTasks } from '../src/db/schema.js';
 
 let handle: TestDbHandle | null = null;
 afterEach(async () => {
@@ -118,6 +119,35 @@ describe('runPipeline (end to end, mocked connectors)', () => {
     );
 
     expect(await new ApprovalsStore(handle.db).get('start-pr:QGP-463')).toBeUndefined();
+  });
+
+  it('drops a "monitoring" execution task once its PR is no longer open — a closed/deleted PR should never look like it\'s still in review', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(executionTasks).values({
+      id: 'QED42OPSIN-60',
+      repo: 'qed42/operational-intelligence',
+      branch: 'work-agent/qed42opsin-60',
+      status: 'monitoring',
+      prUrl: 'https://github.com/qed42/operational-intelligence/pull/999', // not in the fixture PR list
+      createdAt: now,
+      updatedAt: now,
+    });
+    // A still-open PR the fixtures DO include should survive untouched.
+    await handle.db.insert(executionTasks).values({
+      id: 'QED42OPSIN-56',
+      repo: 'qed42/operational-intelligence',
+      branch: 'feature/timesheet-export',
+      status: 'monitoring',
+      prUrl: 'https://github.com/qed42/operational-intelligence/pull/97',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await runPipeline(handle.db, mockConnectors(), { runDate: '2026-09-09' });
+
+    const rows = await handle.db.select().from(executionTasks);
+    expect(rows.map((r) => r.id)).toEqual(['QED42OPSIN-56']);
   });
 
   it('ignores nothing by default — an unrelated key in the list has no effect', async () => {

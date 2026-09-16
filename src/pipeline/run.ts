@@ -1,3 +1,4 @@
+import { eq, inArray } from 'drizzle-orm';
 import type { AnyDb } from '../db/index.js';
 import type { GitHubConnector, JiraConnector, SlackConnector } from '../integrations/types.js';
 import { classifyAll } from './classify.js';
@@ -7,7 +8,29 @@ import { diffState, loadPrevious, saveCurrent, type StateDiff } from './state.js
 import { generateBriefing, persistBriefing } from './briefing.js';
 import { generateApprovalEntries } from './approvalQueue.js';
 import { ApprovalsStore, type ApprovalInput } from '../shared/approvals.js';
-import type { WorkItem } from '../models/types.js';
+import { executionTasks } from '../db/schema.js';
+import type { GitHubPr, WorkItem } from '../models/types.js';
+
+/**
+ * Engineering Execution's own DB row for a ticket ("monitoring": a PR is
+ * open, still being watched) is never touched again by anything else —
+ * unlike work_items, it isn't fully replaced each run. If that PR gets
+ * closed outside this system (a human closes it, or it's been discarded
+ * and redone, as happened repeatedly during testing), the row just sits
+ * there forever claiming a PR is still in review that no longer exists.
+ * `fetchMyPullRequests` only ever returns OPEN PRs, so "not in this list"
+ * reliably means "no longer open" — safe to drop.
+ */
+async function reconcileExecutionTasks(db: AnyDb, prs: GitHubPr[]): Promise<number> {
+  const openUrls = new Set(prs.map((p) => p.url));
+  const monitoring = await db
+    .select({ id: executionTasks.id, prUrl: executionTasks.prUrl })
+    .from(executionTasks)
+    .where(eq(executionTasks.status, 'monitoring'));
+  const staleIds = monitoring.filter((t) => t.prUrl && !openUrls.has(t.prUrl)).map((t) => t.id);
+  if (staleIds.length > 0) await db.delete(executionTasks).where(inArray(executionTasks.id, staleIds));
+  return staleIds.length;
+}
 
 export interface PipelineResult {
   items: WorkItem[];
@@ -46,6 +69,9 @@ export async function runPipeline(
 
   const prs = await connectors.github.fetchMyPullRequests();
   await audit.log('collected_github', { count: prs.length });
+
+  const staleExecutionTasks = await reconcileExecutionTasks(db, prs);
+  if (staleExecutionTasks > 0) await audit.log('execution_tasks_reconciled', { removed: staleExecutionTasks });
 
   let items = correlate(issues, prs, messages);
   await audit.log('correlated', { work_item_count: items.length });
