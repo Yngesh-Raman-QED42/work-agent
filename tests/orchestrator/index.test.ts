@@ -106,5 +106,5 @@ describe('runOrchestratorCycle', () => {
     // engineeringExecution/runbook.test.ts with an injected fake worktree
     // manager; this test's job is just to prove the WIRING happens.
     expect(result.executionResults).toHaveLength(1);
-  });
+  }, 60_000); // checks run against a real-but-empty fake dir and fail, each now retried twice
 });

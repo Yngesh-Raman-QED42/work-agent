@@ -17,6 +17,7 @@ import { writeExecutionState, readExecutionState } from './agents/engineeringExe
 import { GitCliOps } from './agents/engineeringExecution/gitOps.js';
 import { GhCliPullRequestCreator } from './agents/engineeringExecution/prOps.js';
 import { PlaywrightScreenshotCapture } from './agents/engineeringExecution/screenshot.js';
+import { LiveJiraIssueUpdater } from './integrations/jira/issueUpdater.js';
 import { executionTasks } from './db/schema.js';
 import { eq } from 'drizzle-orm';
 
@@ -161,6 +162,7 @@ async function cmdExecStart(args: string[]) {
     config,
     candidates: [task],
     policy: new AutonomyPolicy(),
+    getIssueUpdater: () => new LiveJiraIssueUpdater(),
   });
 
   if (started.status !== 'started') {
@@ -219,6 +221,7 @@ async function cmdExecFinish(args: string[]) {
     gitOps: new GitCliOps(),
     prCreator: new GhCliPullRequestCreator(),
     screenshotCapture: new PlaywrightScreenshotCapture(),
+    getIssueUpdater: () => new LiveJiraIssueUpdater(),
   });
 
   console.log(`Status: ${result.status}`);

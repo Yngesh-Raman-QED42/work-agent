@@ -11,6 +11,8 @@ import { MockPullRequestCreator } from '../../src/agents/engineeringExecution/pr
 import { WorktreeManager } from '../../src/agents/engineeringExecution/worktree.js';
 import { DEFAULT_GATE_CONFIG } from '../../src/agents/engineeringExecution/gate.js';
 import { MockScreenshotCapture, SCREENSHOT_STEPS_PATH } from '../../src/agents/engineeringExecution/screenshot.js';
+import { MockJiraIssueUpdater } from '../../src/integrations/jira/issueUpdater.js';
+import { IN_PROGRESS_STATUS_CANDIDATES, IN_REVIEW_STATUS_CANDIDATES } from '../../src/agents/engineeringExecution/runbook.js';
 import type { TaskContext } from '../../src/agents/engineeringExecution/models.js';
 import type { WorkAgentConfig } from '../../src/config/index.js';
 import { AuditLog } from '../../src/pipeline/audit.js';
@@ -107,6 +109,96 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
     });
     expect(started.status).toBe('no_eligible_task');
     expect(started.worktreePath).toBeUndefined();
+  });
+
+  it('startExecution moves the ticket to whatever "in progress"-equivalent status the workflow actually offers', async () => {
+    handle = await createTestDb();
+    const issueUpdater = new MockJiraIssueUpdater({ 'PROJ-1': 'In Development' }); // not the first candidate — proves it isn't hardcoded to one name
+    await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      getIssueUpdater: () => issueUpdater,
+    });
+    expect(issueUpdater.transitionAttempts).toEqual([{ key: 'PROJ-1', candidates: IN_PROGRESS_STATUS_CANDIDATES }]);
+  });
+
+  it('a Jira status-transition failure at start never stops the worktree that already exists', async () => {
+    handle = await createTestDb();
+    const failingUpdater = { transitionToStatus: () => Promise.reject(new Error('Jira is down')), addComment: () => Promise.resolve() };
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      getIssueUpdater: () => failingUpdater,
+    });
+    expect(started.status).toBe('started');
+    expect(started.worktreePath).toBeTruthy();
+  });
+
+  it('finishExecution posts a comment with the PR link and moves the ticket to whatever "in review"-equivalent status is available', async () => {
+    handle = await createTestDb();
+    const issueUpdater = new MockJiraIssueUpdater({ 'PROJ-1': 'Code Review' });
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    const result = await finishExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      task: started.task!,
+      repo: started.repo!,
+      worktreePath: started.worktreePath!,
+      startedAt: started.startedAt!,
+      outcome: { success: true, summary: 'fixed the overlapping labels' },
+      gitOps: new MockGitOps(),
+      prCreator: new MockPullRequestCreator(),
+      checkCommands: NOOP_CHECKS,
+      getIssueUpdater: () => issueUpdater,
+    });
+
+    expect(result.status).toBe('opened_pr');
+    expect(issueUpdater.comments).toHaveLength(1);
+    expect(issueUpdater.comments[0]!.text).toContain('fixed the overlapping labels');
+    expect(issueUpdater.comments[0]!.links[0]!.url).toBe(result.prUrl);
+    expect(issueUpdater.transitionAttempts).toEqual([{ key: 'PROJ-1', candidates: IN_REVIEW_STATUS_CANDIDATES }]);
+  });
+
+  it('a Jira comment/transition failure at finish never undoes the already-opened PR', async () => {
+    handle = await createTestDb();
+    const failingUpdater = {
+      addComment: () => Promise.reject(new Error('Jira is down')),
+      transitionToStatus: () => Promise.reject(new Error('Jira is down')),
+    };
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    const result = await finishExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      task: started.task!,
+      repo: started.repo!,
+      worktreePath: started.worktreePath!,
+      startedAt: started.startedAt!,
+      outcome: { success: true, summary: 'fixed it' },
+      gitOps: new MockGitOps(),
+      prCreator: new MockPullRequestCreator(),
+      checkCommands: NOOP_CHECKS,
+      getIssueUpdater: () => failingUpdater,
+    });
+    expect(result.status).toBe('opened_pr');
+    expect(result.prUrl).toBeTruthy();
   });
 
   it('finishExecution alone, given a real outcome, completes the pipeline the same way runExecution\'s second half does', async () => {

@@ -4,7 +4,12 @@ import { mkdtempSync, existsSync, writeFileSync, rmSync, mkdirSync, lstatSync, r
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorktreeManager, materializeRealNodeModules } from '../../src/agents/engineeringExecution/worktree.js';
-import { GitCliOps } from '../../src/agents/engineeringExecution/gitOps.js';
+import { GitCliOps, MockGitOps } from '../../src/agents/engineeringExecution/gitOps.js';
+import { finishExecution } from '../../src/agents/engineeringExecution/runbook.js';
+import { PlaywrightScreenshotCapture, type CaptureResult, type ScreenshotStep } from '../../src/agents/engineeringExecution/screenshot.js';
+import { MockPullRequestCreator } from '../../src/agents/engineeringExecution/prOps.js';
+import { createTestDb, type TestDbHandle } from '../../src/test-utils/db.js';
+import type { TaskContext } from '../../src/agents/engineeringExecution/models.js';
 
 function run(cmd: string[], cwd: string) {
   execFileSync(cmd[0]!, cmd.slice(1), { cwd });
@@ -16,6 +21,12 @@ describe('git plumbing (real git, throwaway scratch repo, never touches any real
   let localRepo: string;
   let worktreesRoot: string;
   let manager: WorktreeManager;
+  let dbHandle: TestDbHandle | null = null;
+
+  afterEach(async () => {
+    await dbHandle?.close();
+    dbHandle = null;
+  });
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'work-agent-git-test-'));
@@ -170,4 +181,83 @@ describe('git plumbing (real git, throwaway scratch repo, never touches any real
       .toString();
     expect(assetFiles).toContain('shot.png');
   });
+
+  it('materializes real node_modules before the real screenshot capture runs, even when the caller passes an explicit PlaywrightScreenshotCapture instance', async () => {
+    // Regression test: cli.ts's exec-finish always passes `new
+    // PlaywrightScreenshotCapture()` explicitly — it is never the `??`
+    // default fallback. A guard that only materializes when the caller
+    // left screenshotCapture undefined never fires for that real call
+    // path at all, silently leaving the fast (Turbopack-incompatible)
+    // symlink in place for every real run.
+    writeFileSync(join(localRepo, 'package.json'), JSON.stringify({ name: 'scratch', version: '1.0.0' }));
+    run(['git', 'add', '-A'], localRepo);
+    run(['git', 'commit', '-m', 'add package.json'], localRepo);
+    run(['git', 'push', 'origin', 'main'], localRepo);
+    mkdirSync(join(localRepo, 'node_modules'));
+    writeFileSync(join(localRepo, 'node_modules', 'marker.txt'), 'shared-install');
+
+    const worktreePath = await manager.create('screenshot-materialize-task', 'main');
+    expect(lstatSync(join(worktreePath, 'node_modules')).isSymbolicLink()).toBe(true);
+
+    mkdirSync(join(worktreePath, '.work-agent'));
+    const steps: ScreenshotStep[] = [{ label: 'home', path: '/' }];
+    writeFileSync(join(worktreePath, '.work-agent', 'screenshot-steps.json'), JSON.stringify(steps));
+
+    let sawSymlinkInsideCapture: boolean | null = null;
+    class FakePlaywrightCapture extends PlaywrightScreenshotCapture {
+      override async capture(wtPath: string): Promise<CaptureResult> {
+        // A zero-dependency package.json (this test's fixture) gets no
+        // node_modules dir at all from a real `npm install` — absent is
+        // just as much "not the shared symlink anymore" as a real one.
+        try {
+          sawSymlinkInsideCapture = lstatSync(join(wtPath, 'node_modules')).isSymbolicLink();
+        } catch {
+          sawSymlinkInsideCapture = false;
+        }
+        return { screenshots: [], gifPath: undefined };
+      }
+    }
+
+    dbHandle = await createTestDb();
+    const task: TaskContext = {
+      key: 'PROJ-1',
+      project: 'PROJ',
+      summary: 'Fix a thing',
+      description: 'd'.repeat(200),
+      issueType: 'Task',
+      status: 'To Do',
+      priority: 'Medium',
+      url: 'http://x/PROJ-1',
+      comments: [],
+    };
+    await finishExecution({
+      db: dbHandle.db,
+      config: {
+        jira: { myProjects: [], ignoredKeys: [] },
+        github: {
+          approvedRepos: ['org/repo'],
+          repoMap: { PROJ: 'org/repo' },
+          repoLocalPaths: { 'org/repo': localRepo },
+          repoDefaultBranches: {},
+          previewRecipes: {
+            'org/repo': { startCommand: ['node', '-e', ''], port: 4321, readyPath: '/', readyTimeoutMs: 5000, env: {} },
+          },
+        },
+        slack: { relevantChannels: [] },
+        engineeringExecution: { openPrAsDraft: true },
+        communication: { autoSendRoutine: false },
+      },
+      task,
+      repo: { projectKey: 'PROJ', owner: 'org', repo: 'repo', localPath: localRepo, defaultBranch: 'main' },
+      worktreePath,
+      startedAt: new Date(),
+      outcome: { success: true, summary: 'did the thing' },
+      gitOps: new MockGitOps(),
+      prCreator: new MockPullRequestCreator(),
+      checkCommands: [['noop', ['true']]],
+      screenshotCapture: new FakePlaywrightCapture(),
+    });
+
+    expect(sawSymlinkInsideCapture).toBe(false);
+  }, 30_000);
 });

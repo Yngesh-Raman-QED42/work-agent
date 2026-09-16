@@ -19,6 +19,7 @@ import { resolveRepo } from './repoResolver.js';
 import { selectTask } from './selector.js';
 import { WorktreeManager, materializeRealNodeModules } from './worktree.js';
 import { formatMinutes } from '../workLog/timeEntry.js';
+import type { JiraIssueUpdater } from '../../integrations/jira/issueUpdater.js';
 import {
   PlaywrightScreenshotCapture,
   readScreenshotSteps,
@@ -28,6 +29,13 @@ import {
   type ScreenshotCapture,
   type CapturedScreenshot,
 } from './screenshot.js';
+
+// Every real Jira project names its own workflow statuses differently, so
+// these are candidates tried in order via JiraIssueUpdater.transitionToStatus
+// — whichever one the issue's live workflow actually offers right now wins;
+// none of them is ever forced onto a workflow that doesn't have it.
+export const IN_PROGRESS_STATUS_CANDIDATES = ['In Progress', 'In Development', 'Development', 'Doing'];
+export const IN_REVIEW_STATUS_CANDIDATES = ['In Review', 'Code Review', 'Ready For Review', 'Review', 'Peer Review'];
 
 async function upsertTask(db: AnyDb, id: string, fields: Partial<typeof executionTasks.$inferInsert>): Promise<void> {
   const existing = await db.select().from(executionTasks).where(eq(executionTasks.id, id));
@@ -58,6 +66,10 @@ export interface StartExecutionDeps {
   policy: AutonomyPolicy;
   hasExistingPr?: (key: string) => boolean;
   worktreeManagerFactory?: (localPath: string) => WorktreeManager;
+  // A factory, not an instance — mirrors getWorklogWriter in cli.ts: a live
+  // updater throws in its constructor without real Jira creds, so it's
+  // only ever constructed when there's an issue to actually update.
+  getIssueUpdater?: () => JiraIssueUpdater;
 }
 
 export type StartExecutionStatus = 'started' | 'stopped_ambiguous' | 'no_eligible_task';
@@ -120,6 +132,18 @@ export async function startExecution(deps: StartExecutionDeps): Promise<StartExe
   await audit.log('execution_worktree_created', { path: worktreePath, base_branch: repo.defaultBranch });
   await upsertTask(db, task.key, { repo: repoFullName(repo), worktreePath, status: 'implementing' });
 
+  // Best-effort, same as the screenshot step: real work is genuinely
+  // starting now, so the ticket should say so — but a Jira hiccup here
+  // must never stop the worktree that's already been created.
+  if (deps.getIssueUpdater) {
+    try {
+      const movedTo = await deps.getIssueUpdater().transitionToStatus(task.key, IN_PROGRESS_STATUS_CANDIDATES);
+      await audit.log('execution_status_transitioned', { key: task.key, to: movedTo });
+    } catch (err) {
+      await audit.log('execution_status_transition_failed', { key: task.key, stage: 'start', error: String(err) });
+    }
+  }
+
   const previewRecipe = await resolvePreviewRecipe(config.github.previewRecipes[repoFullName(repo)], repo.localPath);
   const prompt = buildImplementationPrompt(task, worktreePath, previewRecipe);
 
@@ -150,6 +174,7 @@ export interface FinishExecutionDeps {
   // lets a test that deliberately fails a check skip the retry delay.
   checkRetries?: number;
   screenshotCapture?: ScreenshotCapture;
+  getIssueUpdater?: () => JiraIssueUpdater;
 }
 
 export async function finishExecution(deps: FinishExecutionDeps): Promise<ExecutionResult> {
@@ -215,13 +240,16 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
     const steps = await readScreenshotSteps(worktreePath);
     if (steps) {
       try {
-        if (!deps.screenshotCapture) {
-          // Only for the real, production capture path — see
-          // materializeRealNodeModules' own doc for why a dev server needs
-          // this even though every check above just ran fine without it.
+        const capture = deps.screenshotCapture ?? new PlaywrightScreenshotCapture();
+        if (capture instanceof PlaywrightScreenshotCapture) {
+          // Only for the real Playwright capture — cli.ts passes one of
+          // these explicitly (it's not just the `??` fallback), so this
+          // has to check what capture actually IS, not whether the caller
+          // bothered to pass one. See materializeRealNodeModules' own doc
+          // for why a dev server needs this even though every check above
+          // just ran fine without it.
           await materializeRealNodeModules(worktreePath);
         }
-        const capture = deps.screenshotCapture ?? new PlaywrightScreenshotCapture();
         const result = await capture.capture(worktreePath, previewRecipe, steps);
         screenshots = result.screenshots;
         gifPath = result.gifPath;
@@ -306,6 +334,27 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
   await audit.log('execution_pr_opened', { url: prUrl });
   await upsertTask(db, task.key, { prUrl });
 
+  // Best-effort, same as the screenshot step and the start-of-work status
+  // move above — the PR is already open regardless of whether either of
+  // these succeeds, so a Jira hiccup here must never undo or block it.
+  if (deps.getIssueUpdater) {
+    const updater = deps.getIssueUpdater();
+    try {
+      await updater.addComment(task.key, `Work Agent implemented this: ${outcome.summary}`, [
+        { label: `PR: ${task.key}: ${task.summary}`, url: prUrl },
+      ]);
+      await audit.log('execution_jira_comment_posted', { key: task.key });
+    } catch (err) {
+      await audit.log('execution_jira_comment_failed', { key: task.key, error: String(err) });
+    }
+    try {
+      const movedTo = await updater.transitionToStatus(task.key, IN_REVIEW_STATUS_CANDIDATES);
+      await audit.log('execution_status_transitioned', { key: task.key, to: movedTo });
+    } catch (err) {
+      await audit.log('execution_status_transition_failed', { key: task.key, stage: 'finish', error: String(err) });
+    }
+  }
+
   // Real elapsed wall-clock time, from task selection to draft PR — never
   // an estimate. Logging it to Jira is still gated behind your approval:
   // this only files the request, it never posts on its own.
@@ -379,5 +428,6 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
     checkCommands: deps.checkCommands,
     checkRetries: deps.checkRetries,
     screenshotCapture: deps.screenshotCapture,
+    getIssueUpdater: deps.getIssueUpdater,
   });
 }

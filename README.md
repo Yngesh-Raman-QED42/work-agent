@@ -90,11 +90,17 @@ live session actually reads).
    worktree off the correct base branch, prints the implementation prompt. Persists everything
    `exec-finish` needs as `.work-agent/execution-state.json` inside the worktree itself (see
    `src/agents/engineeringExecution/executionState.ts`) — no database schema needed for the
-   handoff.
+   handoff. Also moves the Jira ticket to whatever "in progress"-equivalent status its own
+   workflow currently offers (`IN_PROGRESS_STATUS_CANDIDATES` in `runbook.ts` — tried in order,
+   first one the real workflow has wins; never forces one that doesn't exist).
 2. You (or the live session) implement the fix in that worktree.
-3. `exec-finish <KEY> --summary "..."` — independently re-verifies, checks the gate, captures a
-   screenshot/GIF if you wrote the steps file, branches/commits/pushes, opens the PR, and files
-   the real-elapsed-time approval. If you had to stop early: `exec-finish <KEY> --failed "..."`
+3. `exec-finish <KEY> --summary "..."` — independently re-verifies, checks the gate (retrying each
+   check up to twice more on failure first — see "Known simplifications" below), captures a
+   screenshot/GIF if you wrote the steps file, branches/commits/pushes, opens the PR, posts a Jira
+   comment linking the PR, moves the ticket to whatever "in review"-equivalent status is available
+   (`IN_REVIEW_STATUS_CANDIDATES`), and files the real-elapsed-time approval. All of the Jira
+   writes are best-effort (`src/integrations/jira/issueUpdater.ts`) — a Jira hiccup never undoes or
+   blocks a PR that's already open. If you had to stop early: `exec-finish <KEY> --failed "..."`
    instead, which correctly stops the pipeline rather than leaving it half-done.
 
 `runExecution()` (the original single-call function, used by tests and the orchestrator when a

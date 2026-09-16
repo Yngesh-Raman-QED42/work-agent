@@ -4,13 +4,7 @@
 // places: an approved `log_execution_time` approval, and an ad-hoc
 // `log-time --jira` request — never from anything automatic-by-default.
 
-function plainTextToAdf(text: string): { type: 'doc'; version: 1; content: unknown[] } {
-  return {
-    type: 'doc',
-    version: 1,
-    content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
-  };
-}
+import { plainTextToAdf } from './adf.js';
 
 export interface LogWorkOptions {
   comment?: string;
