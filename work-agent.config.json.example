@@ -31,5 +31,8 @@
   },
   "slack": {
     "relevantChannels": []
+  },
+  "engineeringExecution": {
+    "openPrAsDraft": true
   }
 }

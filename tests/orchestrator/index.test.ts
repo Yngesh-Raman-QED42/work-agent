@@ -34,6 +34,7 @@ function testConfig(): WorkAgentConfig {
       previewRecipes: {},
     },
     slack: { relevantChannels: [] },
+    engineeringExecution: { openPrAsDraft: true },
     communication: { autoSendRoutine: false },
   };
 }

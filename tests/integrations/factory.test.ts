@@ -13,6 +13,7 @@ function testConfig(): WorkAgentConfig {
     jira: { myProjects: [], ignoredKeys: [] },
     github: { approvedRepos: [], repoMap: {}, repoLocalPaths: {}, repoDefaultBranches: {}, previewRecipes: {} },
     slack: { relevantChannels: [] },
+    engineeringExecution: { openPrAsDraft: true },
     communication: { autoSendRoutine: false },
   };
 }

@@ -6,9 +6,9 @@ import { AuditLog } from '../../pipeline/audit.js';
 import { ApprovalsStore } from '../../shared/approvals.js';
 import { evaluateGate, type GateConfig } from './gate.js';
 import { runChecks, DEFAULT_COMMANDS } from './checks.js';
-import type { ClaudeCodeRunner } from './claudeRunner.js';
+import type { ClaudeCodeRunner, RunOutcome } from './claudeRunner.js';
 import type { GitOps } from './gitOps.js';
-import type { ExecutionResult, TaskContext } from './models.js';
+import type { ExecutionResult, RepoInfo, TaskContext } from './models.js';
 import { repoFullName } from './models.js';
 import type { PullRequestCreator } from './prOps.js';
 import { buildImplementationPrompt } from './prompt.js';
@@ -25,23 +25,6 @@ import {
   type ScreenshotCapture,
   type CapturedScreenshot,
 } from './screenshot.js';
-
-export interface RunExecutionDeps {
-  db: AnyDb;
-  config: WorkAgentConfig;
-  candidates: TaskContext[];
-  policy: AutonomyPolicy;
-  claudeRunner: ClaudeCodeRunner;
-  gitOps: GitOps;
-  prCreator: PullRequestCreator;
-  hasExistingPr?: (key: string) => boolean;
-  worktreeManagerFactory?: (localPath: string) => WorktreeManager;
-  gateConfig?: GateConfig;
-  checkCommands?: Array<[string, string[]]>;
-  // Test seam only — production code lets each run construct its own real
-  // PlaywrightScreenshotCapture.
-  screenshotCapture?: ScreenshotCapture;
-}
 
 async function upsertTask(db: AnyDb, id: string, fields: Partial<typeof executionTasks.$inferInsert>): Promise<void> {
   const existing = await db.select().from(executionTasks).where(eq(executionTasks.id, id));
@@ -60,8 +43,34 @@ async function upsertTask(db: AnyDb, id: string, fields: Partial<typeof executio
   }
 }
 
-export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionResult> {
-  const { db, config, candidates, policy, claudeRunner, gitOps, prCreator } = deps;
+// ---------------------------------------------------------------------------
+// Part 1: everything up to "here's the prompt, go implement it." Entirely
+// deterministic — no live agent needed for any of this.
+// ---------------------------------------------------------------------------
+
+export interface StartExecutionDeps {
+  db: AnyDb;
+  config: WorkAgentConfig;
+  candidates: TaskContext[];
+  policy: AutonomyPolicy;
+  hasExistingPr?: (key: string) => boolean;
+  worktreeManagerFactory?: (localPath: string) => WorktreeManager;
+}
+
+export type StartExecutionStatus = 'started' | 'stopped_ambiguous' | 'no_eligible_task';
+
+export interface StartExecutionResult {
+  status: StartExecutionStatus;
+  task?: TaskContext;
+  repo?: RepoInfo;
+  worktreePath?: string;
+  prompt?: string;
+  startedAt?: Date;
+  reasons: string[];
+}
+
+export async function startExecution(deps: StartExecutionDeps): Promise<StartExecutionResult> {
+  const { db, config, candidates, policy } = deps;
   const hasExistingPr = deps.hasExistingPr ?? (() => false);
   const audit = new AuditLog(db);
   const approvals = new ApprovalsStore(db);
@@ -75,7 +84,7 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
 
   if (!selection.picked) {
     await audit.log('execution_no_eligible_task', {});
-    return { status: 'no_eligible_task', checks: [], reasons: ['no candidate satisfied the autonomy policy'] };
+    return { status: 'no_eligible_task', reasons: ['no candidate satisfied the autonomy policy'] };
   }
 
   const task = selection.picked;
@@ -100,7 +109,7 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
     });
     await audit.log('execution_stopped_ambiguous', { key: task.key, reason });
     await upsertTask(db, task.key, { status: 'failed' });
-    return { status: 'stopped_ambiguous', task, checks: [], reasons: [reason] };
+    return { status: 'stopped_ambiguous', task, reasons: [reason] };
   }
 
   const wtManager = deps.worktreeManagerFactory ? deps.worktreeManagerFactory(repo.localPath) : new WorktreeManager(repo.localPath);
@@ -110,7 +119,37 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
 
   const previewRecipe = await resolvePreviewRecipe(config.github.previewRecipes[repoFullName(repo)], repo.localPath);
   const prompt = buildImplementationPrompt(task, worktreePath, previewRecipe);
-  const outcome = await claudeRunner.run(worktreePath, prompt);
+
+  return { status: 'started', task, repo, worktreePath, prompt, startedAt, reasons: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Part 2: everything after the implementer reports back. Also entirely
+// deterministic — verify, gate, optional screenshot, branch/commit/push,
+// draft PR, real-elapsed-time approval. No live agent needed for any of
+// this either; only the implementation step in between the two parts does.
+// ---------------------------------------------------------------------------
+
+export interface FinishExecutionDeps {
+  db: AnyDb;
+  config: WorkAgentConfig;
+  task: TaskContext;
+  repo: RepoInfo;
+  worktreePath: string;
+  startedAt: Date;
+  outcome: RunOutcome;
+  gitOps: GitOps;
+  prCreator: PullRequestCreator;
+  gateConfig?: GateConfig;
+  checkCommands?: Array<[string, string[]]>;
+  screenshotCapture?: ScreenshotCapture;
+}
+
+export async function finishExecution(deps: FinishExecutionDeps): Promise<ExecutionResult> {
+  const { db, config, task, repo, worktreePath, startedAt, outcome, gitOps, prCreator } = deps;
+  const audit = new AuditLog(db);
+  const approvals = new ApprovalsStore(db);
+
   await audit.log('execution_implementation_finished', { success: outcome.success, summary: outcome.summary });
 
   if (!outcome.success) {
@@ -163,6 +202,7 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
   // against.
   let screenshots: CapturedScreenshot[] = [];
   let gifPath: string | undefined;
+  const previewRecipe = await resolvePreviewRecipe(config.github.previewRecipes[repoFullName(repo)], repo.localPath);
   if (previewRecipe) {
     const steps = await readScreenshotSteps(worktreePath);
     if (steps) {
@@ -212,14 +252,15 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
     screenshots.length > 0
       ? `\n\n**Screenshots:**\n\n${screenshots.map((s) => `${s.label}\n\n![${s.label}](${s.relativePath})`).join('\n\n')}\n`
       : '';
+  const asDraft = config.engineeringExecution.openPrAsDraft;
   const prBody =
     `Autonomous implementation of [${task.key}](${task.url}).\n\n` +
     `**Summary of changes:** ${outcome.summary}\n\n` +
     `**Checks:** ${checksLine}\n` +
     gifBlock +
     screenshotsBlock +
-    '\n_Opened as a draft by the Work Agent — no merge, no deploy, review required before anything further happens._';
-  const prUrl = await prCreator.createDraftPr(repo, branchName, `${task.key}: ${task.summary}`, prBody);
+    `\n_Opened${asDraft ? ' as a draft' : ''} by the Work Agent — no merge, no deploy, review required before anything further happens._`;
+  const prUrl = await prCreator.createPr(repo, branchName, `${task.key}: ${task.summary}`, prBody, asDraft);
   await audit.log('execution_pr_opened', { url: prUrl });
   await upsertTask(db, task.key, { prUrl });
 
@@ -227,7 +268,7 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
   // an estimate. Logging it to Jira is still gated behind your approval:
   // this only files the request, it never posts on its own.
   const elapsedMinutes = Math.max(1, Math.round((Date.now() - startedAt.getTime()) / 60_000));
-  await approvals.file({
+  await new ApprovalsStore(db).file({
     id: `exec-log-time:${task.key}`,
     source: 'engineering_execution',
     action: 'log_execution_time',
@@ -253,4 +294,46 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
     screenshots,
     gifPath,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The original one-call entry point — kept working exactly as before for
+// anything that already has a real, live ClaudeCodeRunner to inject (tests,
+// the orchestrator). This is just startExecution -> claudeRunner.run() ->
+// finishExecution wired together; it's not a different code path.
+// ---------------------------------------------------------------------------
+
+export interface RunExecutionDeps extends StartExecutionDeps {
+  claudeRunner: ClaudeCodeRunner;
+  gitOps: GitOps;
+  prCreator: PullRequestCreator;
+  gateConfig?: GateConfig;
+  checkCommands?: Array<[string, string[]]>;
+  // Test seam only — production code lets each run construct its own real
+  // PlaywrightScreenshotCapture.
+  screenshotCapture?: ScreenshotCapture;
+}
+
+export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionResult> {
+  const started = await startExecution(deps);
+  if (started.status !== 'started') {
+    return { status: started.status, task: started.task, checks: [], reasons: started.reasons };
+  }
+
+  const outcome = await deps.claudeRunner.run(started.worktreePath!, started.prompt!);
+
+  return finishExecution({
+    db: deps.db,
+    config: deps.config,
+    task: started.task!,
+    repo: started.repo!,
+    worktreePath: started.worktreePath!,
+    startedAt: started.startedAt!,
+    outcome,
+    gitOps: deps.gitOps,
+    prCreator: deps.prCreator,
+    gateConfig: deps.gateConfig,
+    checkCommands: deps.checkCommands,
+    screenshotCapture: deps.screenshotCapture,
+  });
 }

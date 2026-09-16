@@ -18,6 +18,43 @@ describe('renderDashboard', () => {
     expect(html).toContain('All clear — nothing waiting on a decision.');
   });
 
+  it('shows no search box for an empty panel, but does once it has content', async () => {
+    handle = await createTestDb();
+    const empty = await renderDashboard(handle.db);
+    // The class name legitimately appears in the static CSS/JS regardless —
+    // check for an actual rendered <input>, not just the substring.
+    expect(empty).not.toContain('<input type="text" class="panel-search"');
+
+    await new ApprovalsStore(handle.db).file({
+      id: 'a1', source: 'observation', action: 'review_pull_request', target: 'org/repo#1',
+      context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
+    });
+    const withData = await renderDashboard(handle.db);
+    expect(withData).toContain('Search pending approvals…');
+  });
+
+  it('lists resolved approvals under Approval history, separate from the pending queue', async () => {
+    handle = await createTestDb();
+    const store = new ApprovalsStore(handle.db);
+    await store.file({
+      id: 'a-approved', source: 'engineering_execution', action: 'log_execution_time', target: 'PROJ-1',
+      context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
+    });
+    await store.resolve('a-approved', 'approved');
+    await store.file({
+      id: 'a-rejected', source: 'observation', action: 'create_branch_or_pr', target: 'PROJ-2',
+      context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
+    });
+    await store.resolve('a-rejected', 'rejected');
+
+    const html = await renderDashboard(handle.db);
+    expect(html).toContain('<h2>Approval history</h2><span class="count">2</span>');
+    expect(html).toContain('approved');
+    expect(html).toContain('rejected');
+    // Resolved items must not also appear in the pending "Needs your decision" queue.
+    expect(html).toContain('All clear — nothing waiting on a decision.');
+  });
+
   it('renders a pending approval and escapes its content', async () => {
     handle = await createTestDb();
     await new ApprovalsStore(handle.db).file({

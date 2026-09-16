@@ -77,6 +77,16 @@ const ConfigSchema = z.object({
   slack: z.object({
     relevantChannels: z.array(z.string()).default([]), // empty = not yet configured, treat all as candidate signal
   }),
+  engineeringExecution: z.object({
+    // true (default, safe) = every PR opens as a draft — a human decides
+    // when it's ready. false = opens as a normal, real, reviewable PR
+    // immediately, per your repo's own rules — this system still never
+    // merges anything itself either way, that guardrail doesn't move.
+    // Default stays true because this config is shared with anyone who
+    // clones this repo; flip it locally once you're ready to skip the
+    // draft step yourself.
+    openPrAsDraft: z.boolean().default(true),
+  }),
   communication: z.object({
     // Off by default, always. A "consequential" draft (commitment, deadline,
     // decision, client, conflict, sensitive info) is NEVER auto-sent
@@ -95,6 +105,7 @@ const DEFAULT_CONFIG: WorkAgentConfig = {
   jira: { myProjects: [], ignoredKeys: [] },
   github: { approvedRepos: [], repoMap: {}, repoLocalPaths: {}, repoDefaultBranches: {}, previewRecipes: {} },
   slack: { relevantChannels: [] },
+  engineeringExecution: { openPrAsDraft: true },
   communication: { autoSendRoutine: false },
 };
 

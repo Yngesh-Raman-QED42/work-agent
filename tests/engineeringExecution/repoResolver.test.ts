@@ -7,6 +7,7 @@ function baseConfig(overrides: Partial<WorkAgentConfig['github']> = {}): WorkAge
     jira: { myProjects: [], ignoredKeys: [] },
     github: { approvedRepos: [], repoMap: {}, repoLocalPaths: {}, repoDefaultBranches: {}, previewRecipes: {}, ...overrides },
     slack: { relevantChannels: [] },
+    engineeringExecution: { openPrAsDraft: true },
     communication: { autoSendRoutine: false },
   };
 }

@@ -40,7 +40,9 @@ Dashboard + CLI              — read-only web view + `work-agent <command>`
 ## Guardrails, enforced structurally, not by convention
 
 - No method anywhere merges a PR, deploys anything, or force-pushes.
-- Every PR is opened as a draft.
+- Every PR is opened as a draft by default (`config.engineeringExecution.openPrAsDraft`, default
+  `true`) — flip it locally once you're ready to skip that step yourself; merging remains
+  something this system never does, regardless of that flag.
 - All autonomous file changes happen inside an isolated `git worktree`, never the caller's checkout.
 - A consequential communication draft (commitment/deadline/decision/client/conflict/sensitive) is
   **never** auto-sent, regardless of config.
@@ -67,7 +69,35 @@ npm run cli end-of-day
 npm run cli weekly-summary
 npm run dashboard                      # http://localhost:4180, read-only
 npm run scheduler                      # NOT started automatically — see below
+
+npm run cli exec-start <TICKET_KEY>    # Engineering Execution, part 1 — see "Working a ticket" below
+npm run cli exec-finish <TICKET_KEY> --summary "..."   # part 2, after you've implemented it
 ```
+
+### Working a ticket — exec-start / exec-finish, not a hand-run checklist
+
+Engineering Execution is deliberately split into two CLI commands around the one step that
+genuinely needs a live coding agent (spawning a subagent only works from a live Claude Code
+session — never from a plain script; an unattended `claude -p --permission-mode
+bypassPermissions` subprocess was tried and is blocked by this environment's own safety
+classifier). Everything on either side of that step is real, tested, deterministic code — not a
+prose process for a session to reconstruct by hand each time (see `CLAUDE.md`, which is what a
+live session actually reads).
+
+1. `exec-start <KEY>` — resolves the repo from config, checks eligibility, creates the isolated
+   worktree off the correct base branch, prints the implementation prompt. Persists everything
+   `exec-finish` needs as `.work-agent/execution-state.json` inside the worktree itself (see
+   `src/agents/engineeringExecution/executionState.ts`) — no database schema needed for the
+   handoff.
+2. You (or the live session) implement the fix in that worktree.
+3. `exec-finish <KEY> --summary "..."` — independently re-verifies, checks the gate, captures a
+   screenshot/GIF if you wrote the steps file, branches/commits/pushes, opens the PR, and files
+   the real-elapsed-time approval. If you had to stop early: `exec-finish <KEY> --failed "..."`
+   instead, which correctly stops the pipeline rather than leaving it half-done.
+
+`runExecution()` (the original single-call function, used by tests and the orchestrator when a
+real `ClaudeCodeRunner` is already available) is unchanged — it's just `startExecution()` →
+`claudeRunner.run()` → `finishExecution()` wired together internally, not a different code path.
 
 Tests (no Docker needed — pglite is in-memory):
 
@@ -103,7 +133,12 @@ example:
   "repoLocalPaths": { "your-org/your-repo": "/Users/you/code/your-repo" }
   ```
 
-- **`github.repoDefaultBranches`** — only needed if it isn't `main`.
+- **`github.repoDefaultBranches`** — the branch a worktree is built off *and* the PR targets.
+  **Don't assume this is GitHub's own "default branch" setting** — check what your team's real
+  feature PRs actually target (`gh pr list --state all --json baseRefName`). A repo's technical
+  default can be `main` while every real feature branch is based on and merged into
+  `development`, with `main` reserved for releases — exactly that mismatch caused a real PR to
+  target the wrong branch once already.
   ```json
   "repoDefaultBranches": { "your-org/your-repo": "main" }
   ```

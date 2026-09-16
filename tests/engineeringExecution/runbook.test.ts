@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTestDb, type TestDbHandle } from '../../src/test-utils/db.js';
-import { runExecution } from '../../src/agents/engineeringExecution/runbook.js';
+import { runExecution, startExecution, finishExecution } from '../../src/agents/engineeringExecution/runbook.js';
 import { AutonomyPolicy } from '../../src/agents/engineeringExecution/policy.js';
 import { MockClaudeCodeRunner } from '../../src/agents/engineeringExecution/claudeRunner.js';
 import { MockGitOps } from '../../src/agents/engineeringExecution/gitOps.js';
@@ -50,7 +50,8 @@ function configWithRepo(previewRecipe: 'none' | 'explicit' | 'disabled' = 'none'
       previewRecipes,
     },
     slack: { relevantChannels: [] },
-      communication: { autoSendRoutine: false },
+    engineeringExecution: { openPrAsDraft: true },
+    communication: { autoSendRoutine: false },
   };
 }
 
@@ -77,6 +78,86 @@ afterEach(async () => {
   for (const p of cleanupPaths.splice(0)) rmSync(p, { recursive: true, force: true });
 });
 
+describe('startExecution / finishExecution (the split exec-start / exec-finish uses)', () => {
+  it('startExecution alone produces everything exec-finish needs, without touching git/tests/PRs at all', async () => {
+    handle = await createTestDb();
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    expect(started.status).toBe('started');
+    expect(started.task?.key).toBe('PROJ-1');
+    expect(started.repo?.localPath).toBe('/does/not/matter/for/fake/worktrees');
+    expect(started.worktreePath).toBeTruthy();
+    expect(started.prompt).toContain('PROJ-1');
+    expect(started.startedAt).toBeInstanceOf(Date);
+  });
+
+  it('startExecution reports no_eligible_task exactly like runExecution does, with no worktree created', async () => {
+    handle = await createTestDb();
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask('PROJ-1', { priority: 'High' })],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    expect(started.status).toBe('no_eligible_task');
+    expect(started.worktreePath).toBeUndefined();
+  });
+
+  it('finishExecution alone, given a real outcome, completes the pipeline the same way runExecution\'s second half does', async () => {
+    handle = await createTestDb();
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    expect(started.status).toBe('started');
+
+    const result = await finishExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      task: started.task!,
+      repo: started.repo!,
+      worktreePath: started.worktreePath!,
+      startedAt: started.startedAt!,
+      outcome: { success: true, summary: 'implemented directly by a live session, no claudeRunner bridge involved' },
+      gitOps: new MockGitOps(),
+      prCreator: new MockPullRequestCreator(),
+      checkCommands: NOOP_CHECKS,
+    });
+
+    expect(result.status).toBe('opened_pr');
+    expect(result.prUrl).toMatch(/^https:\/\/github\.com\//);
+    const approval = await new ApprovalsStore(handle.db).get('exec-log-time:PROJ-1');
+    expect(approval).toBeDefined();
+    expect((approval!.context as { minutes: number }).minutes).toBeGreaterThan(0);
+  });
+
+  it('runExecution (the wrapper) produces an identical result to calling startExecution then finishExecution by hand', async () => {
+    handle = await createTestDb();
+    const wrapped = await runExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      claudeRunner: new MockClaudeCodeRunner(),
+      gitOps: new MockGitOps(),
+      prCreator: new MockPullRequestCreator(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      checkCommands: NOOP_CHECKS,
+    });
+    expect(wrapped.status).toBe('opened_pr');
+    expect(wrapped.branch).toBe('work-agent/proj-1');
+  });
+});
+
 describe('runExecution', () => {
   it('happy path opens a draft PR', async () => {
     handle = await createTestDb();
@@ -94,6 +175,43 @@ describe('runExecution', () => {
     expect(result.status).toBe('opened_pr');
     expect(result.prUrl).toMatch(/^https:\/\/github\.com\//);
     expect(result.branch).toBe('work-agent/proj-1');
+  });
+
+  it('opens as a draft by default', async () => {
+    handle = await createTestDb();
+    const prCreator = new MockPullRequestCreator();
+    await runExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      claudeRunner: new MockClaudeCodeRunner(),
+      gitOps: new MockGitOps(),
+      prCreator,
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      checkCommands: NOOP_CHECKS,
+    });
+    expect(prCreator.calls[0]!.asDraft).toBe(true);
+  });
+
+  it('opens as a real, non-draft PR when config.engineeringExecution.openPrAsDraft is false', async () => {
+    handle = await createTestDb();
+    const config = configWithRepo();
+    config.engineeringExecution.openPrAsDraft = false;
+    const prCreator = new MockPullRequestCreator();
+    await runExecution({
+      db: handle.db,
+      config,
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      claudeRunner: new MockClaudeCodeRunner(),
+      gitOps: new MockGitOps(),
+      prCreator,
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      checkCommands: NOOP_CHECKS,
+    });
+    expect(prCreator.calls[0]!.asDraft).toBe(false);
+    expect(prCreator.calls[0]!.body).not.toContain('as a draft');
   });
 
   it('files a log_execution_time approval with real elapsed minutes on a successful run — never posts to Jira on its own', async () => {
@@ -193,7 +311,7 @@ describe('runExecution', () => {
       ),
       gitOps: new MockGitOps(),
       prCreator: {
-        async createDraftPr(_repo, _branch, _title, body) {
+        async createPr(_repo, _branch, _title, body) {
           expect(body).toContain('**Feature in action:**');
           expect(body).toContain('![feature in action](.work-agent/screenshots/feature-in-action.gif)');
           expect(body).toContain('**Screenshots:**');
@@ -458,6 +576,7 @@ describe('runExecution', () => {
         previewRecipes: {},
       },
       slack: { relevantChannels: [] },
+      engineeringExecution: { openPrAsDraft: true },
       communication: { autoSendRoutine: false },
     };
     const result = await runExecution({

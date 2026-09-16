@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import { marked } from 'marked';
 import type { AnyDb } from '../db/index.js';
 import { workItems, approvals, executionTasks, slackSignals, briefings } from '../db/schema.js';
@@ -103,11 +103,20 @@ function statCard(value: string | number, label: string, tone: 'accent' | 'ok' |
 </div>`;
 }
 
+/** Purely client-side (see the script at the bottom) — filters this one
+ * panel's own items, case-insensitive substring match against everything
+ * visible in the card, not just the ticket key. No server round-trip. */
+function searchBox(placeholder: string): string {
+  const p = escapeHtml(placeholder);
+  return `<div class="panel-search-wrap"><input type="text" class="panel-search" placeholder="${p}" aria-label="${p}"></div>`;
+}
+
 export async function renderDashboard(db: AnyDb): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
-  const [items, pendingApprovals, tasks, signals, latestBriefing, todayEntries] = await Promise.all([
+  const [items, pendingApprovals, resolvedApprovals, tasks, signals, latestBriefing, todayEntries] = await Promise.all([
     db.select().from(workItems).orderBy(desc(workItems.updatedAt)).limit(100),
     db.select().from(approvals).where(eq(approvals.status, 'pending')).orderBy(desc(approvals.createdAt)),
+    db.select().from(approvals).where(inArray(approvals.status, ['approved', 'rejected'])).orderBy(desc(approvals.resolvedAt)).limit(30),
     db.select().from(executionTasks).orderBy(desc(executionTasks.updatedAt)).limit(20),
     db.select().from(slackSignals).orderBy(desc(slackSignals.createdAt)).limit(200),
     db.select().from(briefings).where(eq(briefings.kind, 'daily')).orderBy(desc(briefings.id)).limit(1),
@@ -197,6 +206,21 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     <div class="approve-cmd">npm run cli approvals approve ${escapeHtml(a.id)}<br>npm run cli approvals reject ${escapeHtml(a.id)}</div>
   </div>`,
           )
+          .join('\n');
+
+  const approvalHistoryHtml =
+    resolvedApprovals.length === 0
+      ? '<p class="empty">Nothing resolved yet.</p>'
+      : resolvedApprovals
+          .map((a) => {
+            const statusClass = a.status === 'approved' ? 'risk-low' : 'risk-high';
+            const when = a.resolvedAt ? new Date(a.resolvedAt).toLocaleString() : '';
+            return `<div class="card compact ${statusClass}">
+    <div class="approval-head"><span class="badge ${a.status === 'approved' ? 'status' : 'urgency-high'}">${escapeHtml(a.status)}</span><span class="badge source">${escapeHtml(a.source)}</span></div>
+    <div class="item-title">${escapeHtml(humanizeAction(a.action))}</div>
+    <div class="item-sub">on ${idChip(a.target, a.targetUrl)}${when ? ` — ${escapeHtml(when)}` : ''}</div>
+  </div>`;
+          })
           .join('\n');
 
   const tasksHtml =
@@ -315,6 +339,15 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   .panel-head h2 { font-size: 0.95rem; margin: 0; }
   .panel-head .count { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); }
 
+  .panel-search-wrap { margin-bottom: 0.6rem; }
+  .panel-search {
+    width: 100%; font-family: var(--sans); font-size: 0.82rem; color: var(--text);
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px;
+    padding: 0.4rem 0.65rem; outline: none;
+  }
+  .panel-search::placeholder { color: var(--faint); }
+  .panel-search:focus { border-color: var(--accent); }
+
   .card, .item-row { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 0.7rem 0.9rem; margin: 0.5rem 0; }
   .card.compact { padding: 0.55rem 0.8rem; }
   .item-row { border-left: 3px solid var(--border); }
@@ -409,11 +442,22 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   <div class="main">
     <div class="panel">
       <div class="panel-head"><h2>Needs your decision</h2><span class="count">${pendingApprovals.length}</span></div>
+      ${pendingApprovals.length > 0 ? searchBox('Search pending approvals…') : ''}
       ${approvalsHtml}
     </div>
 
     <div class="panel">
+      <div class="panel-head"><h2>Approval history</h2><span class="count">${resolvedApprovals.length}</span></div>
+      ${resolvedApprovals.length > 0 ? searchBox('Search approval history…') : ''}
+      <details>
+        <summary>Show the last ${resolvedApprovals.length} resolved</summary>
+        ${approvalHistoryHtml}
+      </details>
+    </div>
+
+    <div class="panel">
       <div class="panel-head"><h2>Active work items</h2><span class="count">${items.length}</span></div>
+      ${items.length > 0 ? searchBox('Search your tickets…') : ''}
       ${workItemSections || '<p class="empty">Nothing tracked yet — run <code>npm run cli run</code>.</p>'}
     </div>
 
@@ -436,11 +480,13 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 
     <div class="panel">
       <div class="panel-head"><h2>Slack — needs attention</h2><span class="count">${conversations.length}</span></div>
+      ${conversations.length > 0 ? searchBox('Search conversations…') : ''}
       ${signalsHtml}
     </div>
 
     <div class="panel">
       <div class="panel-head"><h2>Engineering execution</h2><span class="count">${tasks.length}</span></div>
+      ${tasks.length > 0 ? searchBox('Search execution tasks…') : ''}
       ${tasksHtml}
     </div>
   </div>
@@ -463,6 +509,48 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
         btn.innerHTML = restore;
         btn.classList.remove('copied');
       }, 1200);
+    });
+  });
+
+  // Per-panel search — purely client-side, filters this panel's own
+  // .item-row/.card elements by case-insensitive substring match against
+  // everything visible in the card (title, ticket key, reasons, etc), not
+  // just the ticket id. A category or a collapsible <details> auto-opens
+  // when it contains a match, and restores its original open/closed state
+  // once the search is cleared.
+  document.addEventListener('input', function (e) {
+    var input = e.target.closest('.panel-search');
+    if (!input) return;
+    var panel = input.closest('.panel');
+    if (!panel) return;
+    var query = input.value.trim().toLowerCase();
+
+    var items = panel.querySelectorAll('.item-row, .card');
+    items.forEach(function (item) {
+      var matches = !query || item.textContent.toLowerCase().indexOf(query) !== -1;
+      item.hidden = !matches;
+      if (matches && query) {
+        var ancestor = item.closest('details');
+        if (ancestor) ancestor.open = true;
+      }
+    });
+
+    var categories = panel.querySelectorAll('details.category');
+    categories.forEach(function (cat) {
+      if (cat.dataset.wasOpen === undefined) cat.dataset.wasOpen = cat.open ? '1' : '0';
+      if (!query) {
+        cat.hidden = false;
+        cat.open = cat.dataset.wasOpen === '1';
+        return;
+      }
+      var visibleCount = cat.querySelectorAll('.item-row:not([hidden])').length;
+      cat.hidden = visibleCount === 0;
+    });
+
+    var plainDetails = panel.querySelectorAll('details:not(.category)');
+    plainDetails.forEach(function (d) {
+      if (d.dataset.wasOpen === undefined) d.dataset.wasOpen = d.open ? '1' : '0';
+      if (!query) d.open = d.dataset.wasOpen === '1';
     });
   });
 })();

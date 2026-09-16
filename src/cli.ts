@@ -10,6 +10,15 @@ import { buildConnectors, type ConnectorMode } from './integrations/factory.js';
 import { logTime } from './agents/workLog/timeEntry.js';
 import { LiveJiraWorklogWriter } from './integrations/jira/worklogWriter.js';
 import { executeApprovedAction } from './shared/executeApproval.js';
+import { LiveJiraConnector } from './integrations/jira/live.js';
+import { AutonomyPolicy } from './agents/engineeringExecution/policy.js';
+import { startExecution, finishExecution } from './agents/engineeringExecution/runbook.js';
+import { writeExecutionState, readExecutionState } from './agents/engineeringExecution/executionState.js';
+import { GitCliOps } from './agents/engineeringExecution/gitOps.js';
+import { GhCliPullRequestCreator } from './agents/engineeringExecution/prOps.js';
+import { PlaywrightScreenshotCapture } from './agents/engineeringExecution/screenshot.js';
+import { executionTasks } from './db/schema.js';
+import { eq } from 'drizzle-orm';
 
 function flagValue(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -130,6 +139,96 @@ async function cmdLogTime(args: string[]) {
   }
 }
 
+/**
+ * The two halves of Engineering Execution, split around the one step that
+ * genuinely needs a live coding agent — see CLAUDE.md. Everything on
+ * either side of that step is deterministic, tested code, not something a
+ * live session has to reconstruct from a prose description each time.
+ */
+async function cmdExecStart(args: string[]) {
+  const key = args[0];
+  if (!key) {
+    console.error('Usage: work-agent exec-start <TICKET_KEY>');
+    process.exit(1);
+  }
+  const config = loadConfig();
+  const db = getDb();
+  const jira = new LiveJiraConnector(); // throws a clear error if Jira creds aren't set — this needs real data
+
+  const task = await jira.fetchIssueDetail(key);
+  const started = await startExecution({
+    db,
+    config,
+    candidates: [task],
+    policy: new AutonomyPolicy(),
+  });
+
+  if (started.status !== 'started') {
+    console.error(`Not starting ${key}: ${started.reasons.join('; ')}`);
+    process.exit(1);
+  }
+
+  await writeExecutionState({
+    task: started.task!,
+    repo: started.repo!,
+    worktreePath: started.worktreePath!,
+    startedAt: started.startedAt!.toISOString(),
+    prompt: started.prompt!,
+  });
+
+  console.log(`Worktree ready: ${started.worktreePath}`);
+  console.log(`\nImplement the ticket there now (inspect first, smallest change that satisfies it, run its own tests/lint/build as you go).`);
+  console.log(`\n--- Prompt ---\n${started.prompt}\n--- end prompt ---`);
+  console.log(`\nWhen done: work-agent exec-finish ${key} --summary "<what you changed and why>"`);
+  console.log(`If you have to stop early: work-agent exec-finish ${key} --failed "<why>"`);
+}
+
+async function cmdExecFinish(args: string[]) {
+  const key = args[0];
+  if (!key) {
+    console.error('Usage: work-agent exec-finish <TICKET_KEY> (--summary "..." | --failed "...")');
+    process.exit(1);
+  }
+  const config = loadConfig();
+  const db = getDb();
+
+  const rows = await db.select().from(executionTasks).where(eq(executionTasks.id, key));
+  const worktreePath = rows[0]?.worktreePath;
+  if (!worktreePath) {
+    console.error(`No exec-start record found for ${key} — run "work-agent exec-start ${key}" first.`);
+    process.exit(1);
+  }
+  const state = await readExecutionState(worktreePath);
+  if (!state) {
+    console.error(`Execution state missing or unreadable at ${worktreePath} — run "work-agent exec-start ${key}" again.`);
+    process.exit(1);
+  }
+
+  const failed = flagValue(args, '--failed');
+  const summary = flagValue(args, '--summary');
+  const outcome = failed ? { success: false, summary: failed } : { success: true, summary: summary ?? 'Implemented by a live Claude Code session.' };
+
+  const result = await finishExecution({
+    db,
+    config,
+    task: state.task,
+    repo: state.repo,
+    worktreePath: state.worktreePath,
+    startedAt: new Date(state.startedAt),
+    outcome,
+    gitOps: new GitCliOps(),
+    prCreator: new GhCliPullRequestCreator(),
+    screenshotCapture: new PlaywrightScreenshotCapture(),
+  });
+
+  console.log(`Status: ${result.status}`);
+  if (result.checks?.length) console.log('Checks:', result.checks.map((c) => `${c.name}=${c.passed ? 'pass' : 'FAIL'}`).join(', '));
+  if (result.prUrl) console.log(`Draft/real PR: ${result.prUrl}`);
+  if (result.screenshots?.length) console.log(`Screenshots: ${result.screenshots.length}${result.gifPath ? ' + GIF' : ''}`);
+  if (result.reasons.length) console.log('Reasons:', result.reasons.join('; '));
+  if (result.status === 'opened_pr') console.log('\nA log_execution_time approval is now pending — review it with "work-agent approvals list".');
+}
+
 async function cmdStatus() {
   const db = getDb();
   const pending = await new ApprovalsStore(db).listPending();
@@ -158,6 +257,12 @@ async function main() {
     case 'log-time':
       await cmdLogTime(rest);
       break;
+    case 'exec-start':
+      await cmdExecStart(rest);
+      break;
+    case 'exec-finish':
+      await cmdExecFinish(rest);
+      break;
     case 'approvals': {
       const [sub, ...subRest] = rest;
       if (sub === 'list') await cmdApprovalsList();
@@ -171,7 +276,7 @@ async function main() {
     }
     default:
       console.error(
-        'Usage: work-agent <run [--mode auto|mock|live]|end-of-day|weekly-summary|status|log-time (--minutes <n>|--hours <n>) [--ticket KEY] [--jira]|approvals list|approvals approve <id>|approvals reject <id>>',
+        'Usage: work-agent <run [--mode auto|mock|live]|end-of-day|weekly-summary|status|log-time (--minutes <n>|--hours <n>) [--ticket KEY] [--jira]|exec-start <KEY>|exec-finish <KEY> (--summary "..."|--failed "...")|approvals list|approvals approve <id>|approvals reject <id>>',
       );
       process.exit(1);
   }
