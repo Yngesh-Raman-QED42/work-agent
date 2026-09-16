@@ -510,6 +510,9 @@ describe('runExecution', () => {
     });
     expect(result.status).toBe('opened_pr');
     expect(result.screenshots).toEqual([]);
+    // Not just silently empty — the CLI (see cli.ts) surfaces this to the
+    // terminal instead of reporting the run as if nothing was even tried.
+    expect(result.screenshotError).toContain('dev server never became ready');
     const audit = (await new AuditLog(handle.db).readAll()).map((e) => e.event);
     expect(audit).toContain('execution_screenshots_failed');
   });

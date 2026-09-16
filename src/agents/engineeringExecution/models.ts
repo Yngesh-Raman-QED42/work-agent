@@ -47,4 +47,7 @@ export interface ExecutionResult {
   worktreePath?: string;
   screenshots?: import('./screenshot.js').CapturedScreenshot[];
   gifPath?: string;
+  // Set only when screenshot capture was attempted and failed — never
+  // blocks the PR, but must not be silently invisible either (see cli.ts).
+  screenshotError?: string;
 }

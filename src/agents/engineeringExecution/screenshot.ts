@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import path from 'node:path';
 import type { WorkAgentConfig } from '../../config/index.js';
 
@@ -95,7 +96,27 @@ export async function autoDetectPreviewRecipe(repoLocalPath: string): Promise<Pr
   }
 }
 
-async function waitForServer(url: string, timeoutMs: number): Promise<void> {
+/** Something already answering on this port before we've even started our
+ * own server means our own `next dev` (or equivalent) either failed to
+ * bind it and exited, or silently fell back to a different port entirely
+ * (Next.js does this automatically on a conflict) — either way, the
+ * generic "did not become ready" timeout that follows is actively
+ * misleading about the real cause. Checked once, up front, specifically
+ * so that case gets its own clear error instead of a 2-minute wait. */
+function isPortInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ port, host: '127.0.0.1' });
+    const done = (inUse: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(inUse);
+    };
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
+async function waitForServer(url: string, timeoutMs: number, getOutput: () => string): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -106,7 +127,15 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
     }
     await new Promise((r) => setTimeout(r, 500));
   }
-  throw new Error(`dev server at ${url} did not become ready within ${timeoutMs}ms`);
+  // Output was ignored entirely before this fix — a real crash, a port
+  // Next.js silently moved off of, a missing env var, all looked
+  // identical from the outside: just a timeout, with no way to tell them
+  // apart. Whatever the dev server actually printed goes in the error now.
+  const output = getOutput().trim();
+  throw new Error(
+    `dev server at ${url} did not become ready within ${timeoutMs}ms` +
+      (output ? `\n--- dev server output (tail) ---\n${output}` : '\n(dev server produced no output at all)'),
+  );
 }
 
 function slug(label: string): string {
@@ -143,10 +172,17 @@ async function encodeGif(frames: Buffer[], worktreePath: string): Promise<string
  */
 export class PlaywrightScreenshotCapture implements ScreenshotCapture {
   async capture(worktreePath: string, recipe: PreviewRecipe, steps: ScreenshotStep[]): Promise<CaptureResult> {
+    if (await isPortInUse(recipe.port)) {
+      throw new Error(
+        `port ${recipe.port} is already in use before starting the preview server — ` +
+          `is another dev server (yours, or a leftover from a previous run) already running on it? ` +
+          `Stop it, or change previewRecipes[...].port in work-agent.config.json.`,
+      );
+    }
     const { chromium } = await import('playwright');
-    const server = await this.startServer(worktreePath, recipe);
+    const { child: server, getOutput } = await this.startServer(worktreePath, recipe);
     try {
-      await waitForServer(`http://localhost:${recipe.port}${recipe.readyPath}`, recipe.readyTimeoutMs);
+      await waitForServer(`http://localhost:${recipe.port}${recipe.readyPath}`, recipe.readyTimeoutMs, getOutput);
 
       const outDir = path.join(worktreePath, SCREENSHOT_OUTPUT_DIR);
       await mkdir(outDir, { recursive: true });
@@ -222,15 +258,28 @@ export class PlaywrightScreenshotCapture implements ScreenshotCapture {
     }
   }
 
-  private async startServer(worktreePath: string, recipe: PreviewRecipe): Promise<ChildProcess> {
+  private async startServer(
+    worktreePath: string,
+    recipe: PreviewRecipe,
+  ): Promise<{ child: ChildProcess; getOutput: () => string }> {
     const [bin, ...args] = recipe.startCommand;
     const child = spawn(bin!, args, {
       cwd: worktreePath,
       env: { ...process.env, ...recipe.env, PORT: String(recipe.port) },
       detached: true, // own process group, so stopServer can kill child processes it spawns (e.g. next dev's own children) too
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    return child;
+    // Bounded so a chatty dev server (verbose HMR logging, say) can't grow
+    // this without limit over the full readyTimeoutMs wait.
+    const OUTPUT_CAP = 8000;
+    let output = '';
+    const capture = (chunk: Buffer) => {
+      output += chunk.toString();
+      if (output.length > OUTPUT_CAP) output = output.slice(-OUTPUT_CAP);
+    };
+    child.stdout?.on('data', capture);
+    child.stderr?.on('data', capture);
+    return { child, getOutput: () => output };
   }
 
   private stopServer(child: ChildProcess): void {

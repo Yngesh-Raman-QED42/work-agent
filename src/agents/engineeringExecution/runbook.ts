@@ -235,6 +235,9 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
   let screenshots: CapturedScreenshot[] = [];
   let gifPath: string | undefined;
   let assetUrls: Record<string, string> = {}; // filename -> hosted raw URL
+  // Surfaced in the CLI output (see cli.ts) — a screenshot failure must
+  // never block the PR, but it must not be silently invisible either.
+  let screenshotError: string | undefined;
   const previewRecipe = await resolvePreviewRecipe(config.github.previewRecipes[repoFullName(repo)], repo.localPath);
   if (previewRecipe) {
     const steps = await readScreenshotSteps(worktreePath);
@@ -274,10 +277,12 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
             // Publishing failed — screenshots simply won't appear in the PR
             // body. They must still never end up committed to the code
             // branch, so the cleanup below runs regardless.
+            screenshotError = `captured but failed to publish to the assets branch: ${String(err)}`;
             await audit.log('execution_screenshot_assets_failed', { key: task.key, error: String(err) });
           }
         }
       } catch (err) {
+        screenshotError = String(err);
         await audit.log('execution_screenshots_failed', { key: task.key, error: String(err) });
       }
     }
@@ -384,6 +389,7 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
     reasons: gateDecision.reasons,
     screenshots,
     gifPath,
+    screenshotError,
   };
 }
 

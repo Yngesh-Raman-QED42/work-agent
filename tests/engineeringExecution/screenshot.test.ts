@@ -184,4 +184,44 @@ describe('PlaywrightScreenshotCapture (real browser, real server)', () => {
     // The dev server must not be left running after capture returns.
     await expect(fetch(`http://localhost:${port}/`)).rejects.toThrow();
   }, 45_000);
+
+  it('fails fast with a clear reason when the port is already occupied, instead of the generic timeout', async () => {
+    const { createServer } = await import('node:net');
+    const port = 41730 + (process.pid % 500);
+    const occupier = createServer();
+    await new Promise<void>((resolve) => occupier.listen(port, resolve));
+    try {
+      const worktree = makeWorktree();
+      const recipe: PreviewRecipe = {
+        startCommand: ['node', '-e', ''],
+        port,
+        readyPath: '/',
+        readyTimeoutMs: 15_000,
+        env: {},
+      };
+      const capture = new PlaywrightScreenshotCapture();
+      await expect(capture.capture(worktree, recipe, [{ label: 'x', path: '/' }])).rejects.toThrow(/already in use/);
+    } finally {
+      await new Promise((resolve) => occupier.close(resolve));
+    }
+  }, 20_000);
+
+  it('includes the dev server\'s own stdout/stderr in the error when it never becomes ready — no more silent, unexplained timeouts', async () => {
+    const worktree = makeWorktree();
+    const port = 41930 + (process.pid % 500);
+    const recipe: PreviewRecipe = {
+      // Never listens on the port — proves the timeout path, not a real
+      // server. Prints a distinctive marker so the test can assert the
+      // failure surfaces it instead of a bare "did not become ready".
+      startCommand: ['node', '-e', "console.error('BOOM: simulated dev server crash reason'); setInterval(() => {}, 1000)"],
+      port,
+      readyPath: '/',
+      readyTimeoutMs: 2_000,
+      env: {},
+    };
+    const capture = new PlaywrightScreenshotCapture();
+    await expect(capture.capture(worktree, recipe, [{ label: 'x', path: '/' }])).rejects.toThrow(
+      /BOOM: simulated dev server crash reason/,
+    );
+  }, 20_000);
 });

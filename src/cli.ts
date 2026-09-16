@@ -228,6 +228,7 @@ async function cmdExecFinish(args: string[]) {
   if (result.checks?.length) console.log('Checks:', result.checks.map((c) => `${c.name}=${c.passed ? 'pass' : 'FAIL'}`).join(', '));
   if (result.prUrl) console.log(`Draft/real PR: ${result.prUrl}`);
   if (result.screenshots?.length) console.log(`Screenshots: ${result.screenshots.length}${result.gifPath ? ' + GIF' : ''}`);
+  if (result.screenshotError) console.log(`\nScreenshot capture failed (PR still opened without one):\n${result.screenshotError}`);
   if (result.reasons.length) console.log('Reasons:', result.reasons.join('; '));
   if (result.status === 'opened_pr') console.log('\nA log_execution_time approval is now pending — review it with "work-agent approvals list".');
 }
