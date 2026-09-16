@@ -35,7 +35,14 @@ import {
 // — whichever one the issue's live workflow actually offers right now wins;
 // none of them is ever forced onto a workflow that doesn't have it.
 export const IN_PROGRESS_STATUS_CANDIDATES = ['In Progress', 'In Development', 'Development', 'Doing'];
-export const IN_REVIEW_STATUS_CANDIDATES = ['In Review', 'Code Review', 'Ready For Review', 'Review', 'Peer Review'];
+export const IN_REVIEW_STATUS_CANDIDATES = [
+  'In Review',
+  'PR Review', // op-intelligence's own real workflow uses this name — confirmed live, not a guess
+  'Code Review',
+  'Ready For Review',
+  'Review',
+  'Peer Review',
+];
 
 async function upsertTask(db: AnyDb, id: string, fields: Partial<typeof executionTasks.$inferInsert>): Promise<void> {
   const existing = await db.select().from(executionTasks).where(eq(executionTasks.id, id));
