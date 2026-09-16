@@ -28,13 +28,13 @@ describe('selectTask', () => {
   });
 
   it('skips ineligible candidates', () => {
-    const ineligible = makeTask('A-1', { priority: 'High' });
+    const ineligible = makeTask('A-1', { issueType: 'Epic' });
     const eligible = makeTask('A-2');
     expect(selectTask([ineligible, eligible], policy).picked?.key).toBe('A-2');
   });
 
   it('returns null when nothing is eligible', () => {
-    const ineligible = makeTask('A-1', { priority: 'High' });
+    const ineligible = makeTask('A-1', { issueType: 'Epic' });
     expect(selectTask([ineligible], policy).picked).toBeNull();
   });
 

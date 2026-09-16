@@ -103,7 +103,7 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
     const started = await startExecution({
       db: handle.db,
       config: configWithRepo(),
-      candidates: [makeTask('PROJ-1', { priority: 'High' })],
+      candidates: [makeTask('PROJ-1', { issueType: 'Epic' })],
       policy: new AutonomyPolicy(),
       worktreeManagerFactory: () => new FakeWorktreeManager(),
     });
@@ -111,7 +111,7 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
     expect(started.worktreePath).toBeUndefined();
     // The actual reason it was refused, not a generic "policy said no" —
     // this is what exec-start prints, and it used to say nothing useful.
-    expect(started.reasons).toEqual(['priority High is above the autonomy threshold']);
+    expect(started.reasons).toEqual(['issue type Epic is not eligible for autonomous execution']);
   });
 
   it('gives the specific reason a ticket was refused (e.g. already In Progress), not a generic "no candidate satisfied the policy"', async () => {
@@ -539,7 +539,7 @@ describe('runExecution', () => {
     const result = await runExecution({
       db: handle.db,
       config: configWithRepo(),
-      candidates: [makeTask('PROJ-1', { priority: 'High' })],
+      candidates: [makeTask('PROJ-1', { issueType: 'Epic' })],
       policy: new AutonomyPolicy(),
       claudeRunner: new MockClaudeCodeRunner(),
       gitOps: new MockGitOps(),
@@ -649,7 +649,7 @@ describe('runExecution', () => {
     await runExecution({
       db: handle.db,
       config: configWithRepo(),
-      candidates: [makeTask('PROJ-1', { priority: 'High' })],
+      candidates: [makeTask('PROJ-1', { issueType: 'Epic' })],
       policy: new AutonomyPolicy(),
       claudeRunner: new MockClaudeCodeRunner(),
       gitOps: new MockGitOps(),

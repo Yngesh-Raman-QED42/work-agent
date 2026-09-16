@@ -80,9 +80,19 @@ describe('AutonomyPolicy', () => {
     expect(result.reasons.some((r) => r.toLowerCase().includes('hold'))).toBe(true);
   });
 
-  it('high priority is excluded', () => {
-    const task = { ...CSS_OVERLAP_BUG, priority: 'High' };
+  it('high and critical priority are eligible — urgency alone does not make a ticket unsafe', () => {
+    expect(policy.isEligible({ ...CSS_OVERLAP_BUG, priority: 'High' }).eligible).toBe(true);
+    expect(policy.isEligible({ ...CSS_OVERLAP_BUG, priority: 'Critical' }).eligible).toBe(true);
+  });
+
+  it('a made-up, non-standard priority value is still excluded — this is an allowlist, not "anything goes"', () => {
+    const task = { ...CSS_OVERLAP_BUG, priority: 'Whenever' };
     expect(policy.isEligible(task).eligible).toBe(false);
+  });
+
+  it('an On Hold status is eligible on its own — only an explicit hold instruction in the text excludes it', () => {
+    const task = { ...CSS_OVERLAP_BUG, status: 'On Hold' };
+    expect(policy.isEligible(task).eligible).toBe(true);
   });
 
   it('epic issue type is excluded', () => {

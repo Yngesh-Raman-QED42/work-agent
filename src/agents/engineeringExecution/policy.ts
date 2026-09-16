@@ -25,8 +25,15 @@ const SENSITIVE_KEYWORDS = [
 ];
 
 const ALLOWED_ISSUE_TYPES = new Set(['task', 'bug']);
-const ALLOWED_PRIORITIES = new Set(['low', 'medium']);
-const ALLOWED_STATUSES = new Set(['to do']);
+// Every standard Jira priority is allowed — urgency alone doesn't make a
+// ticket unsafe for autonomous work; scope/sensitivity (checked below)
+// does. Kept as an explicit allowlist (not "anything goes") so a
+// non-standard priority value some project invents isn't silently admitted.
+const ALLOWED_PRIORITIES = new Set(['low', 'medium', 'high', 'critical', 'highest', 'lowest']);
+// "On Hold" is allowed alongside "To Do" — a status of On Hold doesn't by
+// itself mean stop; BLOCKING_PHRASES below still catches an explicit human
+// "keep this on hold, don't start" instruction in the ticket's own text.
+const ALLOWED_STATUSES = new Set(['to do', 'on hold']);
 const MIN_DESCRIPTION_LENGTH = 80;
 
 export interface AutonomyPolicyConfig {
