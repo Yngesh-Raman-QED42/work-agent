@@ -163,6 +163,7 @@ async function cmdExecStart(args: string[]) {
     candidates: [task],
     policy: new AutonomyPolicy(),
     getIssueUpdater: () => new LiveJiraIssueUpdater(),
+    onProgress: (msg) => console.log(`[${new Date().toLocaleTimeString()}] ${msg}`),
   });
 
   if (started.status !== 'started') {
@@ -222,6 +223,7 @@ async function cmdExecFinish(args: string[]) {
     prCreator: new GhCliPullRequestCreator(),
     screenshotCapture: new PlaywrightScreenshotCapture(),
     getIssueUpdater: () => new LiveJiraIssueUpdater(),
+    onProgress: (msg) => console.log(`[${new Date().toLocaleTimeString()}] ${msg}`),
   });
 
   console.log(`Status: ${result.status}`);

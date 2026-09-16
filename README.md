@@ -103,6 +103,13 @@ live session actually reads).
    blocks a PR that's already open. If you had to stop early: `exec-finish <KEY> --failed "..."`
    instead, which correctly stops the pipeline rather than leaving it half-done.
 
+Both commands print real-time progress to the terminal as each stage happens (`onProgress` in
+`runbook.ts`) — `exec-finish` in particular can run for several minutes (independently re-running
+the full test suite, then booting a real dev server for screenshots), and a silently frozen
+terminal for that long is indistinguishable from a hang. The dashboard (`npm run dashboard`,
+`http://localhost:4180`) reflects the same underlying `execution_tasks` row too, live on refresh —
+useful to have open in a second tab while a long run is in progress.
+
 `runExecution()` (the original single-call function, used by tests and the orchestrator when a
 real `ClaudeCodeRunner` is already available) is unchanged — it's just `startExecution()` →
 `claudeRunner.run()` → `finishExecution()` wired together internally, not a different code path.
@@ -189,6 +196,13 @@ example:
     already-installed checkout tolerated), never touching package-lock.json. Every check
     (test/lint/typecheck/build) already ran fine before this point — this only matters for
     Turbopack/webpack-style dev servers specifically.
+  - The spawned preview server never inherits Work Agent's own env vars (`DATABASE_URL`,
+    `JIRA_*`, `SLACK_*`, `GITHUB_TOKEN`, etc. — see `WORK_AGENT_OWN_ENV_KEYS` in `screenshot.ts`).
+    Without this, Work Agent's own already-set `DATABASE_URL` silently wins over the target app's
+    own copied `.env` (an already-set process env var always beats one loaded from a `.env` file),
+    pointing the target app at Work Agent's database instead of its own — every page then 500s
+    against a schema that doesn't match, which again looks identical to a readiness problem from
+    the outside. Confirmed as the real cause of a live failure, not a hypothetical.
 
   `readyTimeoutMs` (default 60s when auto-detected) is how long to wait for the dev server to come
   up before giving up on screenshots for that run. Every worktree is a cold checkout with no build
@@ -280,4 +294,17 @@ example:
   standalone `work-agent/screenshots/<key>` branch via git plumbing (`GitOps.publishAssetBranch`
   — `git hash-object`/`mktree`/`commit-tree`, pushed as its own ref; never touches the code
   branch's working tree, index, or commit history) and linked into the PR description via
-  `raw.githubusercontent.com`. The PR diff is code only; the images live only in the description.
+  `github.com/OWNER/REPO/raw/REF/PATH` — deliberately **not**
+  `raw.githubusercontent.com/OWNER/REPO/REF/PATH`. The latter is a separate, cookie-less origin
+  that requires its own bearer token; a viewer's browser rendering a PR's `![]()` image never
+  sends one, so it 404s for anyone on a private repo regardless of their GitHub permissions
+  (confirmed against a real private repo). The `github.com/.../raw/...` alias is same-origin with
+  the PR page itself, so it authenticates via the viewer's normal github.com session. The PR diff
+  is code only; the images live only in the description.
+- Booting the real dev server for screenshots can make the target app itself write to disk as a
+  side effect (a runtime cache, a generated file — op-intelligence's own avatar-image route did
+  exactly this) — none of that is part of the implementer's actual change. `finishExecution` snapshots
+  untracked files right before capture and removes anything new right after, so only the
+  implementer's real diff reaches the eventual commit. Work Agent's own bookkeeping under
+  `.work-agent/` (execution-state.json, the screenshot steps file) is removed unconditionally
+  before every commit, whether or not a screenshot was even attempted.

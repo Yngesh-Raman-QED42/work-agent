@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTestDb, type TestDbHandle } from '../../src/test-utils/db.js';
@@ -249,6 +249,42 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
     expect((approval!.context as { minutes: number }).minutes).toBeGreaterThan(0);
   });
 
+  it('reports real-time progress through onProgress — a silent multi-minute run looks identical to a hang', async () => {
+    handle = await createTestDb();
+    const startMessages: string[] = [];
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      onProgress: (m) => startMessages.push(m),
+    });
+    expect(startMessages.some((m) => m.includes('Evaluating ticket eligibility'))).toBe(true);
+    expect(startMessages.some((m) => m.includes('Creating an isolated git worktree'))).toBe(true);
+    expect(startMessages.some((m) => m.includes('Worktree ready'))).toBe(true);
+
+    const finishMessages: string[] = [];
+    const result = await finishExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      task: started.task!,
+      repo: started.repo!,
+      worktreePath: started.worktreePath!,
+      startedAt: started.startedAt!,
+      outcome: { success: true, summary: 'did the thing' },
+      gitOps: new MockGitOps(),
+      prCreator: new MockPullRequestCreator(),
+      checkCommands: NOOP_CHECKS,
+      onProgress: (m) => finishMessages.push(m),
+    });
+    expect(result.status).toBe('opened_pr');
+    expect(finishMessages.some((m) => m.includes('Independently re-running tests'))).toBe(true);
+    expect(finishMessages.some((m) => m.startsWith('Checks:'))).toBe(true);
+    expect(finishMessages.some((m) => m.startsWith('Branching, committing, and pushing'))).toBe(true);
+    expect(finishMessages.some((m) => m.startsWith('PR opened:'))).toBe(true);
+  });
+
   it('runExecution (the wrapper) produces an identical result to calling startExecution then finishExecution by hand', async () => {
     handle = await createTestDb();
     const wrapped = await runExecution({
@@ -423,9 +459,12 @@ describe('runExecution', () => {
       prCreator: {
         async createPr(_repo, _branch, _title, body) {
           expect(body).toContain('**Feature in action:**');
-          expect(body).toContain('![feature in action](https://raw.githubusercontent.com/org/repo/work-agent/screenshots/proj-1/feature-in-action.gif)');
+          // github.com/.../raw/..., not raw.githubusercontent.com — the
+          // latter is a separate, cookie-less origin that 404s for anyone
+          // viewing a private repo (confirmed against the real repo).
+          expect(body).toContain('![feature in action](https://github.com/org/repo/raw/work-agent/screenshots/proj-1/feature-in-action.gif)');
           expect(body).toContain('**Screenshots:**');
-          expect(body).toContain('![Home page](https://raw.githubusercontent.com/org/repo/work-agent/screenshots/proj-1/1-home-page.png)');
+          expect(body).toContain('![Home page](https://github.com/org/repo/raw/work-agent/screenshots/proj-1/1-home-page.png)');
           return 'https://github.com/org/repo/pull/1';
         },
       },
@@ -450,6 +489,78 @@ describe('runExecution', () => {
     expect(publishCall![2]).toBe('work-agent/screenshots/proj-1');
     const files = publishCall![3] as Array<{ path: string; name: string }>;
     expect(files.map((f) => f.name).sort()).toEqual(['1-home-page.png', 'feature-in-action.gif']);
+  });
+
+  it('removes a file the dev server itself wrote as a side effect (e.g. an avatar image cache) before the commit, not just the screenshots', async () => {
+    handle = await createTestDb();
+    const fakeCapture = {
+      calls: [] as unknown[],
+      async capture(worktreePath: string) {
+        // Simulates the real op-intelligence bug: hitting a page during
+        // capture makes the app itself write a file that was never part
+        // of the implementer's change.
+        mkdirSync(join(worktreePath, 'avatars'));
+        writeFileSync(join(worktreePath, 'avatars', 'user123.png'), 'not a real png');
+        return { screenshots: [], gifPath: undefined };
+      },
+    };
+    const gitOps = new MockGitOps();
+    gitOps.fakeUntrackedFilesSequence = [[], ['avatars/user123.png']]; // before capture, after capture
+    const result = await runExecution({
+      db: handle.db,
+      config: configWithRepo('explicit'),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      claudeRunner: new MockClaudeCodeRunner(
+        { success: true, summary: 'done' },
+        { relPath: SCREENSHOT_STEPS_PATH, content: JSON.stringify([{ label: 'Home page', path: '/' }]) },
+      ),
+      gitOps,
+      prCreator: new MockPullRequestCreator(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      checkCommands: NOOP_CHECKS,
+      screenshotCapture: fakeCapture,
+    });
+
+    expect(result.status).toBe('opened_pr');
+    // git doesn't track empty directories at all, so the file being gone is
+    // what actually matters for the eventual commit — an emptied-out
+    // `avatars/` left behind is harmless.
+    expect(existsSync(join(result.worktreePath!, 'avatars', 'user123.png'))).toBe(false);
+    const audit = (await new AuditLog(handle.db).readAll()).find((e) => e.event === 'execution_dev_server_side_effects_removed');
+    expect((audit!.details as { paths: string[] }).paths).toEqual(['avatars/user123.png']);
+  });
+
+  it("always removes Work Agent's own .work-agent bookkeeping (e.g. execution-state.json) before the commit, even when the repo has no preview recipe at all", async () => {
+    handle = await createTestDb();
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo('none'),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    expect(started.status).toBe('started');
+    // Real exec-start writes exactly this file for the exec-finish handoff
+    // (executionState.ts) — simulate its presence directly here.
+    mkdirSync(join(started.worktreePath!, '.work-agent'));
+    writeFileSync(join(started.worktreePath!, '.work-agent', 'execution-state.json'), '{}');
+
+    const result = await finishExecution({
+      db: handle.db,
+      config: configWithRepo('none'),
+      task: started.task!,
+      repo: started.repo!,
+      worktreePath: started.worktreePath!,
+      startedAt: started.startedAt!,
+      outcome: { success: true, summary: 'did the thing' },
+      gitOps: new MockGitOps(),
+      prCreator: new MockPullRequestCreator(),
+      checkCommands: NOOP_CHECKS,
+    });
+
+    expect(result.status).toBe('opened_pr');
+    expect(existsSync(join(started.worktreePath!, '.work-agent'))).toBe(false);
   });
 
   it('never attempts a screenshot when the repo explicitly opts out, even with a steps file present', async () => {

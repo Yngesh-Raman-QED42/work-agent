@@ -144,6 +144,20 @@ describe('git plumbing (real git, throwaway scratch repo, never touches any real
     expect(existsSync(join(path, 'node_modules'))).toBe(false);
   }, 30_000);
 
+  it('listUntrackedFiles reports untracked files individually, including inside a wholly-new directory', async () => {
+    const path = await manager.create('untracked-task', 'main');
+    const ops = new GitCliOps();
+
+    expect(await ops.listUntrackedFiles(path)).toEqual([]);
+
+    writeFileSync(join(path, 'loose.txt'), 'x');
+    mkdirSync(join(path, 'avatars'));
+    writeFileSync(join(path, 'avatars', 'user123.png'), 'not a real png');
+
+    const untracked = (await ops.listUntrackedFiles(path)).sort();
+    expect(untracked).toEqual(['avatars/user123.png', 'loose.txt']);
+  });
+
   it('commitAll returns false when nothing changed', async () => {
     const path = await manager.create('no-op-task', 'main');
     const ops = new GitCliOps();

@@ -25,7 +25,7 @@ import {
   readScreenshotSteps,
   cleanupScreenshotSteps,
   resolvePreviewRecipe,
-  SCREENSHOT_OUTPUT_DIR,
+  SCREENSHOT_STEPS_PATH,
   type ScreenshotCapture,
   type CapturedScreenshot,
 } from './screenshot.js';
@@ -77,6 +77,11 @@ export interface StartExecutionDeps {
   // updater throws in its constructor without real Jira creds, so it's
   // only ever constructed when there's an issue to actually update.
   getIssueUpdater?: () => JiraIssueUpdater;
+  // Real-time progress for the CLI (see cli.ts) — a silent multi-minute
+  // run with no output feels indistinguishable from a hang. No-op by
+  // default so tests stay quiet; the audit log remains the durable record
+  // either way, this is purely "something is happening" feedback.
+  onProgress?: (message: string) => void;
 }
 
 export type StartExecutionStatus = 'started' | 'stopped_ambiguous' | 'no_eligible_task';
@@ -94,9 +99,11 @@ export interface StartExecutionResult {
 export async function startExecution(deps: StartExecutionDeps): Promise<StartExecutionResult> {
   const { db, config, candidates, policy } = deps;
   const hasExistingPr = deps.hasExistingPr ?? (() => false);
+  const report = deps.onProgress ?? (() => {});
   const audit = new AuditLog(db);
   const approvals = new ApprovalsStore(db);
 
+  report('Evaluating ticket eligibility against the autonomy policy...');
   await audit.log('execution_run_started', { candidate_count: candidates.length });
 
   const selection = selectTask(candidates, policy, hasExistingPr);
@@ -144,10 +151,12 @@ export async function startExecution(deps: StartExecutionDeps): Promise<StartExe
     return { status: 'stopped_ambiguous', task, reasons: [reason] };
   }
 
+  report(`Selected ${task.key}. Creating an isolated git worktree off ${repo.defaultBranch}...`);
   const wtManager = deps.worktreeManagerFactory ? deps.worktreeManagerFactory(repo.localPath) : new WorktreeManager(repo.localPath);
   const worktreePath = await wtManager.create(task.key.toLowerCase(), repo.defaultBranch);
   await audit.log('execution_worktree_created', { path: worktreePath, base_branch: repo.defaultBranch });
   await upsertTask(db, task.key, { repo: repoFullName(repo), worktreePath, status: 'implementing' });
+  report(`Worktree ready at ${worktreePath}.`);
 
   // Best-effort, same as the screenshot step: real work is genuinely
   // starting now, so the ticket should say so — but a Jira hiccup here
@@ -156,6 +165,7 @@ export async function startExecution(deps: StartExecutionDeps): Promise<StartExe
     try {
       const movedTo = await deps.getIssueUpdater().transitionToStatus(task.key, IN_PROGRESS_STATUS_CANDIDATES);
       await audit.log('execution_status_transitioned', { key: task.key, to: movedTo });
+      if (movedTo) report(`Moved ${task.key} to "${movedTo}" in Jira.`);
     } catch (err) {
       await audit.log('execution_status_transition_failed', { key: task.key, stage: 'start', error: String(err) });
     }
@@ -192,10 +202,12 @@ export interface FinishExecutionDeps {
   checkRetries?: number;
   screenshotCapture?: ScreenshotCapture;
   getIssueUpdater?: () => JiraIssueUpdater;
+  onProgress?: (message: string) => void;
 }
 
 export async function finishExecution(deps: FinishExecutionDeps): Promise<ExecutionResult> {
   const { db, config, task, repo, worktreePath, startedAt, outcome, gitOps, prCreator } = deps;
+  const report = deps.onProgress ?? (() => {});
   const audit = new AuditLog(db);
   const approvals = new ApprovalsStore(db);
 
@@ -219,9 +231,11 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
     return { status: 'stopped_ambiguous', task, checks: [], reasons: [outcome.summary], worktreePath };
   }
 
+  report('Implementation reported done. Independently re-running tests/lint/typecheck/build (can take a few minutes)...');
   const checks = await runChecks(worktreePath, deps.checkCommands ?? DEFAULT_COMMANDS, undefined, deps.checkRetries);
   await audit.log('execution_checks_run', { results: checks.map((c) => ({ name: c.name, passed: c.passed })) });
   await upsertTask(db, task.key, { status: 'checking', validationStatus: checks });
+  report(`Checks: ${checks.map((c) => `${c.name}=${c.passed ? 'pass' : 'FAIL'}`).join(', ')}`);
 
   const diffStat = await gitOps.diffStat(worktreePath, `origin/${repo.defaultBranch}`);
   const gateDecision = evaluateGate(checks, diffStat, deps.gateConfig);
@@ -255,10 +269,20 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
   // Surfaced in the CLI output (see cli.ts) — a screenshot failure must
   // never block the PR, but it must not be silently invisible either.
   let screenshotError: string | undefined;
+  report('Gate passed. Checking for a screenshot/GIF to capture...');
   const previewRecipe = await resolvePreviewRecipe(config.github.previewRecipes[repoFullName(repo)], repo.localPath);
   if (previewRecipe) {
     const steps = await readScreenshotSteps(worktreePath);
     if (steps) {
+      report('Booting the preview server and capturing screenshots (can take a minute or two)...');
+      // Booting a real dev server and navigating real pages can make the
+      // target app itself write to disk as a normal side effect (an image
+      // cache, a generated file — op-intelligence's own /api/avatars route
+      // did exactly this, writing into an `avatars/` dir at the repo root).
+      // None of that is part of the implementer's actual change, so
+      // anything untracked that appears between here and the commit below
+      // that wasn't already untracked gets removed, not silently committed.
+      const untrackedBefore = new Set(await gitOps.listUntrackedFiles(worktreePath));
       try {
         const capture = deps.screenshotCapture ?? new PlaywrightScreenshotCapture();
         if (capture instanceof PlaywrightScreenshotCapture) {
@@ -274,6 +298,7 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
         screenshots = result.screenshots;
         gifPath = result.gifPath;
         await audit.log('execution_screenshots_captured', { key: task.key, count: screenshots.length, gif: !!gifPath });
+        report(`Captured ${screenshots.length} screenshot(s)${gifPath ? ' + GIF' : ''}. Publishing to the assets branch...`);
 
         // Publish to a standalone assets branch — via git plumbing, so this
         // never touches the code branch's own commit history — then delete
@@ -287,7 +312,15 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
           const assetsBranch = `work-agent/screenshots/${task.key.toLowerCase()}`;
           try {
             await gitOps.publishAssetBranch(worktreePath, assetsBranch, files);
-            const rawBase = `https://raw.githubusercontent.com/${repoFullName(repo)}/${assetsBranch}`;
+            // github.com/OWNER/REPO/raw/REF/PATH, not
+            // raw.githubusercontent.com/OWNER/REPO/REF/PATH — the latter is
+            // a separate, cookie-less origin that 404s on anything but a
+            // public repo (it needs its own bearer token; a viewer's
+            // browser rendering a PR's ![]() image never sends one). The
+            // github.com/.../raw/... alias is same-origin with the PR page
+            // itself, so it works under the viewer's normal session
+            // regardless of repo visibility.
+            const rawBase = `https://github.com/${repoFullName(repo)}/raw/${assetsBranch}`;
             assetUrls = Object.fromEntries(files.map((f) => [f.name, `${rawBase}/${f.name}`]));
             await audit.log('execution_screenshot_assets_published', { key: task.key, branch: assetsBranch, count: files.length });
           } catch (err) {
@@ -300,15 +333,28 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
         }
       } catch (err) {
         screenshotError = String(err);
+        report(`Screenshot capture failed (continuing without one): ${String(err).split('\n')[0]}`);
         await audit.log('execution_screenshots_failed', { key: task.key, error: String(err) });
+      }
+
+      const untrackedAfter = await gitOps.listUntrackedFiles(worktreePath);
+      const newSideEffects = untrackedAfter.filter((p) => !untrackedBefore.has(p) && p !== SCREENSHOT_STEPS_PATH && !p.startsWith('.work-agent/'));
+      if (newSideEffects.length > 0) {
+        await Promise.all(newSideEffects.map((p) => rm(path.join(worktreePath, p), { recursive: true, force: true })));
+        await audit.log('execution_dev_server_side_effects_removed', { key: task.key, paths: newSideEffects });
       }
     }
     await cleanupScreenshotSteps(worktreePath);
-    // Never let captured images ride along in the code PR's own diff — they
-    // live only on the assets branch (or nowhere, if publishing failed).
-    await rm(path.join(worktreePath, SCREENSHOT_OUTPUT_DIR), { recursive: true, force: true });
   }
+  // Entirely Work Agent's own bookkeeping (execution-state.json, and
+  // anything the screenshot step above left behind) — never anything the
+  // implementer is meant to intentionally create, so it's safe to remove
+  // wholesale, unconditionally, right before the code commit below. Kept
+  // outside the `if (previewRecipe)` block above: a repo that opts out of
+  // screenshots entirely still needs this cleanup just as much.
+  await rm(path.join(worktreePath, '.work-agent'), { recursive: true, force: true });
 
+  report('Branching, committing, and pushing...');
   const branchName = `work-agent/${task.key.toLowerCase()}`;
   await gitOps.createBranch(worktreePath, branchName);
   const commitMessage = `${task.key}: ${task.summary}\n\n${outcome.summary}\n\nCo-Authored-By: Work Agent <work-agent@local>`;
@@ -355,6 +401,7 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
   const prUrl = await prCreator.createPr(repo, branchName, `${task.key}: ${task.summary}`, prBody, asDraft);
   await audit.log('execution_pr_opened', { url: prUrl });
   await upsertTask(db, task.key, { prUrl });
+  report(`PR opened: ${prUrl}`);
 
   // Best-effort, same as the screenshot step and the start-of-work status
   // move above — the PR is already open regardless of whether either of
@@ -366,12 +413,14 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
         { label: `PR: ${task.key}: ${task.summary}`, url: prUrl },
       ]);
       await audit.log('execution_jira_comment_posted', { key: task.key });
+      report(`Posted a comment on ${task.key} with the PR link.`);
     } catch (err) {
       await audit.log('execution_jira_comment_failed', { key: task.key, error: String(err) });
     }
     try {
       const movedTo = await updater.transitionToStatus(task.key, IN_REVIEW_STATUS_CANDIDATES);
       await audit.log('execution_status_transitioned', { key: task.key, to: movedTo });
+      if (movedTo) report(`Moved ${task.key} to "${movedTo}" in Jira.`);
     } catch (err) {
       await audit.log('execution_status_transition_failed', { key: task.key, stage: 'finish', error: String(err) });
     }
@@ -452,5 +501,6 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
     checkRetries: deps.checkRetries,
     screenshotCapture: deps.screenshotCapture,
     getIssueUpdater: deps.getIssueUpdater,
+    onProgress: deps.onProgress,
   });
 }

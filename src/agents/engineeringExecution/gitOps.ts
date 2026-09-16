@@ -25,6 +25,12 @@ export interface GitOps {
    * PR's own diff or commit history.
    */
   publishAssetBranch(worktreePath: string, branchName: string, files: AssetFile[]): Promise<void>;
+  /** Every untracked path (files and whole new directories alike) in the
+   * worktree right now — used to detect files a dev server run created as
+   * a runtime side effect (e.g. an on-disk avatar image cache) that were
+   * never part of the implementer's actual change, so they can be removed
+   * before the eventual commit instead of silently riding along in it. */
+  listUntrackedFiles(worktreePath: string): Promise<string[]>;
 }
 
 export class GitCliOps implements GitOps {
@@ -66,11 +72,26 @@ export class GitCliOps implements GitOps {
       timeoutMs: 180_000,
     });
   }
+
+  async listUntrackedFiles(worktreePath: string): Promise<string[]> {
+    const result = await runOrThrow(['git', 'status', '--porcelain', '--untracked-files=all'], { cwd: worktreePath });
+    return result.output
+      .split('\n')
+      .filter((line) => line.startsWith('?? '))
+      .map((line) => line.slice(3).trim())
+      .map((p) => (p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p))
+      .filter(Boolean);
+  }
 }
 
 export class MockGitOps implements GitOps {
   calls: Array<[string, ...unknown[]]> = [];
   hasChanges = true;
+  // One entry consumed per listUntrackedFiles() call, in order (the last
+  // entry repeats once exhausted) — lets a test simulate "before" and
+  // "after" snapshots differing, e.g. a dev server run leaving a new file.
+  fakeUntrackedFilesSequence: string[][] = [[]];
+  private untrackedCallIndex = 0;
 
   constructor(private fakeDiffStat = ' src/example.ts | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-)') {}
 
@@ -94,5 +115,12 @@ export class MockGitOps implements GitOps {
 
   async publishAssetBranch(worktreePath: string, branchName: string, files: AssetFile[]): Promise<void> {
     this.calls.push(['publishAssetBranch', worktreePath, branchName, files]);
+  }
+
+  async listUntrackedFiles(worktreePath: string): Promise<string[]> {
+    this.calls.push(['listUntrackedFiles', worktreePath]);
+    const idx = Math.min(this.untrackedCallIndex, this.fakeUntrackedFilesSequence.length - 1);
+    this.untrackedCallIndex += 1;
+    return this.fakeUntrackedFilesSequence[idx]!;
   }
 }
