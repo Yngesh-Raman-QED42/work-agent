@@ -1,4 +1,5 @@
 import { mkdtempSync, existsSync, mkdirSync } from 'node:fs';
+import { symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runOrThrow, run } from './shell.js';
@@ -20,6 +21,7 @@ export class WorktreeManager {
       cwd: this.repoLocalPath,
       timeoutMs: 120_000,
     });
+    await this.ensureDependencies(path);
     return path;
   }
 
@@ -35,7 +37,33 @@ export class WorktreeManager {
       cwd: this.repoLocalPath,
       timeoutMs: 120_000,
     });
+    await this.ensureDependencies(path);
     return path;
+  }
+
+  /**
+   * `git worktree add` gives a fresh checkout with no `node_modules` —
+   * it's gitignored, so nothing about the worktree itself provides it. Left
+   * unhandled, every check (test/lint/typecheck/build) fails immediately in
+   * every worktree, regardless of what the ticket's own change touches.
+   *
+   * Fastest, and safe: symlink the primary checkout's own `node_modules`.
+   * Safe specifically because CLAUDE.md forbids the implementer from ever
+   * touching lockfiles autonomously, so package.json/package-lock.json are
+   * guaranteed identical between the worktree and the primary checkout —
+   * there is no dependency change a symlink could paper over. Only when the
+   * primary checkout has never been installed at all does this fall back to
+   * a real (slower) install inside the worktree itself.
+   */
+  private async ensureDependencies(worktreePath: string): Promise<void> {
+    const sharedModules = join(this.repoLocalPath, 'node_modules');
+    if (!existsSync(join(this.repoLocalPath, 'package.json'))) return; // not a Node project — nothing to do
+    if (existsSync(sharedModules)) {
+      await symlink(sharedModules, join(worktreePath, 'node_modules'), 'dir');
+      return;
+    }
+    const hasLockfile = existsSync(join(this.repoLocalPath, 'package-lock.json'));
+    await runOrThrow(hasLockfile ? ['npm', 'ci'] : ['npm', 'install'], { cwd: worktreePath, timeoutMs: 600_000 });
   }
 
   async remove(path: string): Promise<void> {

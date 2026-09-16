@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, existsSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, writeFileSync, rmSync, mkdirSync, lstatSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorktreeManager } from '../../src/agents/engineeringExecution/worktree.js';
@@ -72,6 +72,36 @@ describe('git plumbing (real git, throwaway scratch repo, never touches any real
     const branches = execFileSync('git', ['branch', '-a'], { cwd: bareRemote }).toString();
     expect(branches).toContain('work-agent/feature-task');
   });
+
+  it('a fresh worktree gets node_modules symlinked from the primary checkout, when one already exists there', async () => {
+    writeFileSync(join(localRepo, 'package.json'), '{}');
+    mkdirSync(join(localRepo, 'node_modules'));
+    writeFileSync(join(localRepo, 'node_modules', 'marker.txt'), 'shared-install');
+
+    const path = await manager.create('dep-symlink-task', 'main');
+
+    expect(lstatSync(join(path, 'node_modules')).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(path, 'node_modules', 'marker.txt'), 'utf-8')).toBe('shared-install');
+  });
+
+  it('falls back to a real install in the worktree when the primary checkout has never been installed', async () => {
+    // Committed and pushed — the worktree is checked out from origin/main,
+    // so an uncommitted package.json in localRepo alone wouldn't appear
+    // there at all, real install or not.
+    writeFileSync(join(localRepo, 'package.json'), JSON.stringify({ name: 'scratch', version: '1.0.0' }));
+    run(['git', 'add', '-A'], localRepo);
+    run(['git', 'commit', '-m', 'add package.json'], localRepo);
+    run(['git', 'push', 'origin', 'main'], localRepo);
+    // Deliberately no node_modules and no lockfile in localRepo.
+
+    const path = await manager.create('dep-install-task', 'main');
+
+    // A zero-dependency package.json doesn't get an actual node_modules dir
+    // from npm — the meaningful assertion is that install actually ran
+    // (proven by the lockfile it writes) rather than the symlink path.
+    expect(existsSync(join(path, 'package-lock.json'))).toBe(true);
+    expect(existsSync(join(path, 'node_modules'))).toBe(false);
+  }, 30_000);
 
   it('commitAll returns false when nothing changed', async () => {
     const path = await manager.create('no-op-task', 'main');
