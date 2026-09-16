@@ -109,6 +109,23 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
     });
     expect(started.status).toBe('no_eligible_task');
     expect(started.worktreePath).toBeUndefined();
+    // The actual reason it was refused, not a generic "policy said no" —
+    // this is what exec-start prints, and it used to say nothing useful.
+    expect(started.reasons).toEqual(['priority High is above the autonomy threshold']);
+  });
+
+  it('gives the specific reason a ticket was refused (e.g. already In Progress), not a generic "no candidate satisfied the policy"', async () => {
+    handle = await createTestDb();
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask('PROJ-1', { status: 'In Progress' })],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    expect(started.status).toBe('no_eligible_task');
+    expect(started.reasons[0]).toMatch(/^status In Progress is not eligible/);
+    expect(started.reasons[0]).not.toContain('PROJ-1:'); // single candidate — no need to prefix the key
   });
 
   it('startExecution moves the ticket to whatever "in progress"-equivalent status the workflow actually offers', async () => {

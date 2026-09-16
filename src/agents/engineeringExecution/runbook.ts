@@ -106,7 +106,17 @@ export async function startExecution(deps: StartExecutionDeps): Promise<StartExe
 
   if (!selection.picked) {
     await audit.log('execution_no_eligible_task', {});
-    return { status: 'no_eligible_task', reasons: ['no candidate satisfied the autonomy policy'] };
+    // The specific per-candidate reasons (e.g. "status In Progress is not
+    // eligible...") already exist on each evaluation — surfacing only a
+    // generic "no candidate satisfied the policy" here was the actual bug:
+    // exec-start would refuse a ticket with no way to tell why. Only
+    // prefixed with the ticket key when there's more than one candidate to
+    // tell apart — exec-start's single-ticket case reads cleanly without it.
+    const reasons =
+      selection.evaluations.length > 1
+        ? selection.evaluations.flatMap((e) => e.reasons.map((r) => `${e.task.key}: ${r}`))
+        : selection.evaluations.flatMap((e) => e.reasons);
+    return { status: 'no_eligible_task', reasons: reasons.length > 0 ? reasons : ['no candidate satisfied the autonomy policy'] };
   }
 
   const task = selection.picked;
