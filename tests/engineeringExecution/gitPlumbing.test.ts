@@ -79,4 +79,35 @@ describe('git plumbing (real git, throwaway scratch repo, never touches any real
     await ops.createBranch(path, 'work-agent/no-op-task');
     expect(await ops.commitAll(path, 'nothing changed')).toBe(false);
   });
+
+  it('publishAssetBranch lands files on their own branch without disturbing the checked-out branch or its commit history', async () => {
+    const path = await manager.create('screenshot-task', 'main');
+    const ops = new GitCliOps();
+    await ops.createBranch(path, 'work-agent/screenshot-task');
+
+    const shotPath = join(path, 'shot.png');
+    writeFileSync(shotPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const branchBefore = execFileSync('git', ['branch', '--show-current'], { cwd: path }).toString().trim();
+
+    await ops.publishAssetBranch(path, 'work-agent/screenshots/screenshot-task', [{ path: shotPath, name: 'shot.png' }]);
+
+    // Still on the code branch, working tree untouched — the asset commit
+    // never checked anything out or modified the index here.
+    const branchAfter = execFileSync('git', ['branch', '--show-current'], { cwd: path }).toString().trim();
+    expect(branchAfter).toBe(branchBefore);
+    expect(await ops.commitAll(path, 'should be a no-op, shot.png is untracked but unrelated to this check')).toBe(true);
+    // The code branch's own log has nothing to do with the asset commit.
+    const log = execFileSync('git', ['log', '--oneline'], { cwd: path }).toString();
+    expect(log).not.toContain('Screenshots for');
+
+    // The asset branch landed on the remote as its own orphan history.
+    const branches = execFileSync('git', ['branch', '-a'], { cwd: bareRemote }).toString();
+    expect(branches).toContain('work-agent/screenshots/screenshot-task');
+    const assetLog = execFileSync('git', ['log', '--oneline', 'work-agent/screenshots/screenshot-task'], { cwd: bareRemote })
+      .toString();
+    expect(assetLog).toContain('Screenshots for work-agent/screenshots/screenshot-task');
+    const assetFiles = execFileSync('git', ['ls-tree', '--name-only', 'work-agent/screenshots/screenshot-task'], { cwd: bareRemote })
+      .toString();
+    expect(assetFiles).toContain('shot.png');
+  });
 });

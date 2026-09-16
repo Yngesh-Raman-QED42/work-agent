@@ -1,4 +1,6 @@
 import { eq } from 'drizzle-orm';
+import { rm } from 'node:fs/promises';
+import path from 'node:path';
 import type { AnyDb } from '../../db/index.js';
 import { executionTasks } from '../../db/schema.js';
 import type { WorkAgentConfig } from '../../config/index.js';
@@ -7,7 +9,7 @@ import { ApprovalsStore } from '../../shared/approvals.js';
 import { evaluateGate, type GateConfig } from './gate.js';
 import { runChecks, DEFAULT_COMMANDS } from './checks.js';
 import type { ClaudeCodeRunner, RunOutcome } from './claudeRunner.js';
-import type { GitOps } from './gitOps.js';
+import type { GitOps, AssetFile } from './gitOps.js';
 import type { ExecutionResult, RepoInfo, TaskContext } from './models.js';
 import { repoFullName } from './models.js';
 import type { PullRequestCreator } from './prOps.js';
@@ -22,6 +24,7 @@ import {
   readScreenshotSteps,
   cleanupScreenshotSteps,
   resolvePreviewRecipe,
+  SCREENSHOT_OUTPUT_DIR,
   type ScreenshotCapture,
   type CapturedScreenshot,
 } from './screenshot.js';
@@ -202,6 +205,7 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
   // against.
   let screenshots: CapturedScreenshot[] = [];
   let gifPath: string | undefined;
+  let assetUrls: Record<string, string> = {}; // filename -> hosted raw URL
   const previewRecipe = await resolvePreviewRecipe(config.github.previewRecipes[repoFullName(repo)], repo.localPath);
   if (previewRecipe) {
     const steps = await readScreenshotSteps(worktreePath);
@@ -212,11 +216,37 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
         screenshots = result.screenshots;
         gifPath = result.gifPath;
         await audit.log('execution_screenshots_captured', { key: task.key, count: screenshots.length, gif: !!gifPath });
+
+        // Publish to a standalone assets branch — via git plumbing, so this
+        // never touches the code branch's own commit history — then delete
+        // the local files so the code commit below can never pick them up.
+        // The screenshot belongs in the PR *description*, not the PR *diff*.
+        const files: AssetFile[] = [
+          ...screenshots.map((s) => ({ path: path.join(worktreePath, s.relativePath), name: path.basename(s.relativePath) })),
+          ...(gifPath ? [{ path: path.join(worktreePath, gifPath), name: path.basename(gifPath) }] : []),
+        ];
+        if (files.length > 0) {
+          const assetsBranch = `work-agent/screenshots/${task.key.toLowerCase()}`;
+          try {
+            await gitOps.publishAssetBranch(worktreePath, assetsBranch, files);
+            const rawBase = `https://raw.githubusercontent.com/${repoFullName(repo)}/${assetsBranch}`;
+            assetUrls = Object.fromEntries(files.map((f) => [f.name, `${rawBase}/${f.name}`]));
+            await audit.log('execution_screenshot_assets_published', { key: task.key, branch: assetsBranch, count: files.length });
+          } catch (err) {
+            // Publishing failed — screenshots simply won't appear in the PR
+            // body. They must still never end up committed to the code
+            // branch, so the cleanup below runs regardless.
+            await audit.log('execution_screenshot_assets_failed', { key: task.key, error: String(err) });
+          }
+        }
       } catch (err) {
         await audit.log('execution_screenshots_failed', { key: task.key, error: String(err) });
       }
     }
     await cleanupScreenshotSteps(worktreePath);
+    // Never let captured images ride along in the code PR's own diff — they
+    // live only on the assets branch (or nowhere, if publishing failed).
+    await rm(path.join(worktreePath, SCREENSHOT_OUTPUT_DIR), { recursive: true, force: true });
   }
 
   const branchName = `work-agent/${task.key.toLowerCase()}`;
@@ -247,10 +277,12 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
   await upsertTask(db, task.key, { branch: branchName, status: 'monitoring' });
 
   const checksLine = checks.map((c) => `${c.name}=${c.passed ? 'pass' : 'FAIL'}`).join(', ');
-  const gifBlock = gifPath ? `\n\n**Feature in action:**\n\n![feature in action](${gifPath})\n` : '';
+  const gifUrl = gifPath ? assetUrls[path.basename(gifPath)] : undefined;
+  const gifBlock = gifUrl ? `\n\n**Feature in action:**\n\n![feature in action](${gifUrl})\n` : '';
+  const screenshotsWithUrls = screenshots.filter((s) => assetUrls[path.basename(s.relativePath)]);
   const screenshotsBlock =
-    screenshots.length > 0
-      ? `\n\n**Screenshots:**\n\n${screenshots.map((s) => `${s.label}\n\n![${s.label}](${s.relativePath})`).join('\n\n')}\n`
+    screenshotsWithUrls.length > 0
+      ? `\n\n**Screenshots:**\n\n${screenshotsWithUrls.map((s) => `${s.label}\n\n![${s.label}](${assetUrls[path.basename(s.relativePath)]})`).join('\n\n')}\n`
       : '';
   const asDraft = config.engineeringExecution.openPrAsDraft;
   const prBody =

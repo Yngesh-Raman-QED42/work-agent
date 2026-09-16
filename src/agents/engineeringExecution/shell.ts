@@ -6,13 +6,16 @@ export interface CommandResult {
   output: string;
 }
 
-export function run(cmd: string[], opts: { cwd?: string; timeoutMs?: number } = {}): Promise<CommandResult> {
+export function run(cmd: string[], opts: { cwd?: string; timeoutMs?: number; input?: string } = {}): Promise<CommandResult> {
   const timeoutMs = opts.timeoutMs ?? 600_000;
   return new Promise((resolve) => {
     const [bin, ...args] = cmd;
     const child = spawn(bin!, args, { cwd: opts.cwd });
     let output = '';
     let settled = false;
+
+    if (opts.input !== undefined) child.stdin?.end(opts.input);
+    else child.stdin?.end();
 
     const timer = setTimeout(() => {
       if (settled) return;
@@ -38,7 +41,7 @@ export function run(cmd: string[], opts: { cwd?: string; timeoutMs?: number } = 
   });
 }
 
-export async function runOrThrow(cmd: string[], opts: { cwd?: string; timeoutMs?: number } = {}): Promise<CommandResult> {
+export async function runOrThrow(cmd: string[], opts: { cwd?: string; timeoutMs?: number; input?: string } = {}): Promise<CommandResult> {
   const result = await run(cmd, opts);
   if (result.code !== 0) {
     throw new Error(`command failed (${result.command}):\n${result.output.slice(-2000)}`);

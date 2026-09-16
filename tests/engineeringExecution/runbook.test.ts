@@ -294,12 +294,13 @@ describe('runExecution', () => {
     expect(capture.calls).toHaveLength(0);
   });
 
-  it('captures screenshots, embeds them in the PR body, and cleans up the steps file before commit', async () => {
+  it('captures screenshots, publishes them to a standalone assets branch, embeds hosted links in the PR body — never the code diff', async () => {
     handle = await createTestDb();
     const capture = new MockScreenshotCapture({
       screenshots: [{ label: 'Home page', relativePath: '.work-agent/screenshots/1-home-page.png' }],
       gifPath: '.work-agent/screenshots/feature-in-action.gif',
     });
+    const gitOps = new MockGitOps();
     const result = await runExecution({
       db: handle.db,
       config: configWithRepo('explicit'),
@@ -309,13 +310,13 @@ describe('runExecution', () => {
         { success: true, summary: 'done' },
         { relPath: SCREENSHOT_STEPS_PATH, content: JSON.stringify([{ label: 'Home page', path: '/' }]) },
       ),
-      gitOps: new MockGitOps(),
+      gitOps,
       prCreator: {
         async createPr(_repo, _branch, _title, body) {
           expect(body).toContain('**Feature in action:**');
-          expect(body).toContain('![feature in action](.work-agent/screenshots/feature-in-action.gif)');
+          expect(body).toContain('![feature in action](https://raw.githubusercontent.com/org/repo/work-agent/screenshots/proj-1/feature-in-action.gif)');
           expect(body).toContain('**Screenshots:**');
-          expect(body).toContain('![Home page](.work-agent/screenshots/1-home-page.png)');
+          expect(body).toContain('![Home page](https://raw.githubusercontent.com/org/repo/work-agent/screenshots/proj-1/1-home-page.png)');
           return 'https://github.com/org/repo/pull/1';
         },
       },
@@ -331,6 +332,15 @@ describe('runExecution', () => {
     expect(capture.calls[0]!.steps).toEqual([{ label: 'Home page', path: '/' }]);
     // The instruction file is cleaned up before commit — it must not ship in the diff.
     expect(existsSync(join(result.worktreePath!, SCREENSHOT_STEPS_PATH))).toBe(false);
+    // Nor the screenshots/GIF themselves — those went to a separate assets
+    // branch, not the code branch's own commit.
+    expect(existsSync(join(result.worktreePath!, '.work-agent', 'screenshots'))).toBe(false);
+
+    const publishCall = gitOps.calls.find((c) => c[0] === 'publishAssetBranch');
+    expect(publishCall).toBeTruthy();
+    expect(publishCall![2]).toBe('work-agent/screenshots/proj-1');
+    const files = publishCall![3] as Array<{ path: string; name: string }>;
+    expect(files.map((f) => f.name).sort()).toEqual(['1-home-page.png', 'feature-in-action.gif']);
   });
 
   it('never attempts a screenshot when the repo explicitly opts out, even with a steps file present', async () => {

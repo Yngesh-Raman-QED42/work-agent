@@ -234,3 +234,8 @@ example:
 - When 2+ screenshot steps are captured, an animated GIF ("feature-in-action.gif", assembled from
   the same frames via `gifenc`/`pngjs`, both pure-JS with no native deps) is embedded above the
   individual stills in the PR body — a quick "see it in action" preview, not a screen recording.
+- Screenshots/GIFs never ship as files in the code PR's own diff. They're published to a
+  standalone `work-agent/screenshots/<key>` branch via git plumbing (`GitOps.publishAssetBranch`
+  — `git hash-object`/`mktree`/`commit-tree`, pushed as its own ref; never touches the code
+  branch's working tree, index, or commit history) and linked into the PR description via
+  `raw.githubusercontent.com`. The PR diff is code only; the images live only in the description.
