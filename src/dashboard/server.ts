@@ -26,7 +26,7 @@ async function refresh(): Promise<void> {
   try {
     const messages = await connectors.slack.fetchRelevantMessages({ lookbackHours: 24 });
     await runSlackIntelligence(db, messages);
-    await runPipeline(db, connectors);
+    await runPipeline(db, connectors, { ignoredKeys: config.jira.ignoredKeys });
     console.log(`[${new Date().toISOString()}] dashboard data refreshed`);
   } catch (err) {
     // A transient Jira/GitHub hiccup shouldn't take the dashboard down —

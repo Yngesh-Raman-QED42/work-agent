@@ -4,7 +4,7 @@ import type { WorkAgentConfig } from '../../src/config/index.js';
 
 function baseConfig(overrides: Partial<WorkAgentConfig['github']> = {}): WorkAgentConfig {
   return {
-    jira: { myProjects: [] },
+    jira: { myProjects: [], ignoredKeys: [] },
     github: { approvedRepos: [], repoMap: {}, repoLocalPaths: {}, repoDefaultBranches: {}, previewRecipes: {}, ...overrides },
     slack: { relevantChannels: [] },
     communication: { autoSendRoutine: false },

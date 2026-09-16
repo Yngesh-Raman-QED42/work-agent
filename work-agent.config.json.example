@@ -1,6 +1,7 @@
 {
   "jira": {
-    "myProjects": []
+    "myProjects": [],
+    "ignoredKeys": []
   },
   "github": {
     "approvedRepos": ["your-org/your-repo"],

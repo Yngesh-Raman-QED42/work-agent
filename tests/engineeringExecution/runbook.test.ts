@@ -41,7 +41,7 @@ function configWithRepo(previewRecipe: 'none' | 'explicit' | 'disabled' = 'none'
         ? { 'org/repo': false }
         : {};
   return {
-    jira: { myProjects: [] },
+    jira: { myProjects: [], ignoredKeys: [] },
     github: {
       approvedRepos: ['org/repo'],
       repoMap: { PROJ: 'org/repo' },
@@ -449,7 +449,7 @@ describe('runExecution', () => {
   it('works for a project that has never been seen before, as long as config maps it (no hardcoding anywhere in the flow)', async () => {
     handle = await createTestDb();
     const config: WorkAgentConfig = {
-      jira: { myProjects: [] },
+      jira: { myProjects: [], ignoredKeys: [] },
       github: {
         approvedRepos: ['brand-new-org/brand-new-repo'],
         repoMap: { NEWPROJ: 'brand-new-org/brand-new-repo' },

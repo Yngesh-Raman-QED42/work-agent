@@ -10,7 +10,7 @@ const ENV_KEYS = ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'SLACK_USER_T
 
 function testConfig(): WorkAgentConfig {
   return {
-    jira: { myProjects: [] },
+    jira: { myProjects: [], ignoredKeys: [] },
     github: { approvedRepos: [], repoMap: {}, repoLocalPaths: {}, repoDefaultBranches: {}, previewRecipes: {} },
     slack: { relevantChannels: [] },
     communication: { autoSendRoutine: false },

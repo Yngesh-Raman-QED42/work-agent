@@ -10,6 +10,13 @@ const ConfigSchema = z.object({
     // project, with no allowlist. That's the whole point: it has to work
     // the day you start on a project this config has never heard of.
     myProjects: z.array(z.string()).default([]),
+    // Explicit per-ticket opt-out. Everything assigned to you shows up on
+    // the dashboard by default — this is the one deliberate exception,
+    // for a ticket you know about and don't want cluttering it (someone
+    // else's placeholder assignment, something you're intentionally
+    // ignoring). Add a key here and it's excluded before anything else
+    // ever sees it — never inferred, always something you typed yourself.
+    ignoredKeys: z.array(z.string()).default([]),
   }),
   github: z.object({
     // Repos where the Engineering Execution agent (Phase 2+) is allowed to
@@ -85,7 +92,7 @@ export type WorkAgentConfig = z.infer<typeof ConfigSchema>;
 // work-agent.config.json as you take on projects; nothing here should ever
 // need a specific project/repo name hardcoded into the app itself.
 const DEFAULT_CONFIG: WorkAgentConfig = {
-  jira: { myProjects: [] },
+  jira: { myProjects: [], ignoredKeys: [] },
   github: { approvedRepos: [], repoMap: {}, repoLocalPaths: {}, repoDefaultBranches: {}, previewRecipes: {} },
   slack: { relevantChannels: [] },
   communication: { autoSendRoutine: false },

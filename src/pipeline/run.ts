@@ -19,6 +19,10 @@ export interface PipelineResult {
 export interface PipelineConfig {
   lookbackHours?: number;
   runDate?: string;
+  // Ticket keys to exclude before anything else ever sees them — see
+  // jira.ignoredKeys in work-agent.config.json. Empty by default: nothing
+  // assigned to you is hidden unless you explicitly say so.
+  ignoredKeys?: string[];
 }
 
 export async function runPipeline(
@@ -35,8 +39,10 @@ export async function runPipeline(
   const messages = await connectors.slack.fetchRelevantMessages({ lookbackHours });
   await audit.log('collected_slack', { count: messages.length });
 
-  const issues = await connectors.jira.fetchMyOpenIssues();
-  await audit.log('collected_jira', { count: issues.length });
+  const ignoredKeys = new Set(config.ignoredKeys ?? []);
+  const fetchedIssues = await connectors.jira.fetchMyOpenIssues();
+  const issues = fetchedIssues.filter((issue) => !ignoredKeys.has(issue.key));
+  await audit.log('collected_jira', { count: issues.length, ignored: fetchedIssues.length - issues.length });
 
   const prs = await connectors.github.fetchMyPullRequests();
   await audit.log('collected_github', { count: prs.length });

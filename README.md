@@ -131,6 +131,15 @@ example:
   "Test Environment Bypass" on `/login`) — give it the real selector and a real test account your
   app actually accepts, so the implementer never has to guess at one blind.
 
+- **`jira.ignoredKeys`** — the one deliberate exception to "everything assigned to you shows up."
+  Every ticket assigned to you appears on the dashboard by default, with no allowlist — this is
+  purely an opt-*out*, for a specific ticket you already know about and don't want cluttering it.
+  Filtered out before correlation or classification ever runs, so it never even becomes a work
+  item, not just hidden in the UI.
+  ```json
+  "ignoredKeys": ["PROJ-999"]
+  ```
+
 - **`jira.myProjects`** and **`slack.relevantChannels`** — reserved for future filtering; safe to
   leave as `[]`. Observation already pulls every ticket assigned to you and every Slack message
   that mentions you or links to one of your tickets, with no allowlist required.

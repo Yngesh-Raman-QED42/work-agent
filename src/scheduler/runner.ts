@@ -17,7 +17,7 @@ async function main() {
   const { connectors, resolved } = buildConnectors(config, 'auto');
   console.log(`Connectors: jira=${resolved.jira}, github=${resolved.github}, slack=${resolved.slack}`);
 
-  const scheduler = new Scheduler(db, standardJobs({ db, connectors }));
+  const scheduler = new Scheduler(db, standardJobs({ db, connectors, ignoredKeys: config.jira.ignoredKeys }));
   await scheduler.ensureRegistered();
 
   console.log('Scheduler running. Ticking every 60s. Ctrl+C to stop.');

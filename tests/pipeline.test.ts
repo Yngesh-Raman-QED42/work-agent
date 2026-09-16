@@ -74,6 +74,25 @@ describe('runPipeline (end to end, mocked connectors)', () => {
     expect(rows.some((r) => r.jiraKey === 'QED42OPSIN-59')).toBe(true);
   });
 
+  it('excludes an explicitly ignored ticket entirely, before correlation or classification ever sees it', async () => {
+    handle = await createTestDb();
+    const result = await runPipeline(handle.db, mockConnectors(), { runDate: '2026-09-09', ignoredKeys: ['QED42OPSIN-59'] });
+    expect(result.items.some((i) => i.id === 'QED42OPSIN-59')).toBe(false);
+  });
+
+  it('audit log records how many were ignored, for a real "why is this gone" answer later', async () => {
+    handle = await createTestDb();
+    await runPipeline(handle.db, mockConnectors(), { runDate: '2026-09-09', ignoredKeys: ['QED42OPSIN-59'] });
+    const collected = (await new AuditLog(handle.db).readAll()).find((e) => e.event === 'collected_jira');
+    expect((collected!.details as { ignored: number }).ignored).toBe(1);
+  });
+
+  it('ignores nothing by default — an unrelated key in the list has no effect', async () => {
+    handle = await createTestDb();
+    const result = await runPipeline(handle.db, mockConnectors(), { runDate: '2026-09-09', ignoredKeys: ['NOT-A-REAL-KEY'] });
+    expect(result.items.some((i) => i.id === 'QED42OPSIN-59')).toBe(true);
+  });
+
   it('no mock connector exposes a write method', () => {
     const forbidden = /^(post|send|update|edit|delete|create|transition|merge|push)/i;
     for (const connector of [new MockSlackConnector(), new MockJiraConnector(), new MockGitHubConnector()]) {

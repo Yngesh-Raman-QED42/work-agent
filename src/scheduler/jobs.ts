@@ -1,5 +1,6 @@
 import type { AnyDb } from '../db/index.js';
 import type { GitHubConnector, JiraConnector, SlackConnector } from '../integrations/types.js';
+import type { WorkAgentConfig } from '../config/index.js';
 import { runPipeline } from '../pipeline/run.js';
 import { generateEndOfDay } from '../agents/endOfDay/runbook.js';
 import { generateWeeklySummary } from '../agents/weeklySummary/runbook.js';
@@ -9,6 +10,7 @@ import type { JobDefinition } from './scheduler.js';
 export interface StandardJobsDeps {
   db: AnyDb;
   connectors: { slack: SlackConnector; jira: JiraConnector; github: GitHubConnector };
+  ignoredKeys?: WorkAgentConfig['jira']['ignoredKeys'];
 }
 
 /**
@@ -27,7 +29,7 @@ export function standardJobs(deps: StandardJobsDeps): JobDefinition[] {
       id: 'morning_briefing',
       intervalMinutes: 24 * 60,
       run: async () => {
-        await runPipeline(deps.db, deps.connectors);
+        await runPipeline(deps.db, deps.connectors, { ignoredKeys: deps.ignoredKeys });
       },
     },
     {
@@ -36,7 +38,7 @@ export function standardJobs(deps: StandardJobsDeps): JobDefinition[] {
       run: async () => {
         const messages = await deps.connectors.slack.fetchRelevantMessages({ lookbackHours: 1 });
         await runSlackIntelligence(deps.db, messages);
-        await runPipeline(deps.db, deps.connectors);
+        await runPipeline(deps.db, deps.connectors, { ignoredKeys: deps.ignoredKeys });
       },
     },
     {

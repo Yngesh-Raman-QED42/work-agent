@@ -39,6 +39,15 @@ export function classify(item: WorkItem): WorkItem {
         urgency = 'medium';
       }
       reasons.push(`${issue.key} is in progress with no linked PR yet`);
+    } else if (issue.statusCategory === 'To Do' && item.prs.length === 0) {
+      // A ticket assigned to you that you haven't started is real, visible
+      // open work — not "informational." Landing it in the same low-signal
+      // "fyi" bucket as an unrelated PR someone mentioned once hid it behind
+      // a collapsed section by default, indistinguishable from actual noise.
+      if (category === 'fyi') {
+        category = 'needs_action';
+      }
+      reasons.push(`${issue.key} is assigned to you and hasn't been started yet`);
     }
 
     if (HIGH_PRIORITY_NAMES.has(issue.priority.toLowerCase()) && URGENCY_RANK[urgency] > URGENCY_RANK.high) {

@@ -23,7 +23,7 @@ async function cmdRun(args: string[]) {
   const { connectors, resolved } = buildConnectors(config, mode);
   console.log(`[connectors: jira=${resolved.jira}, github=${resolved.github}, slack=${resolved.slack}]`);
 
-  const result = await runPipeline(db, connectors);
+  const result = await runPipeline(db, connectors, { ignoredKeys: config.jira.ignoredKeys });
   console.log(result.briefing);
   console.log(`[approval queue: ${result.approvalQueue.length} item(s)]`);
   console.log(`[work items tracked: ${result.items.length}]`);

@@ -25,7 +25,7 @@ afterEach(async () => {
 
 function testConfig(): WorkAgentConfig {
   return {
-    jira: { myProjects: [] },
+    jira: { myProjects: [], ignoredKeys: [] },
     github: {
       approvedRepos: ['org/repo'],
       repoMap: { NEWPROJ: 'org/repo' },

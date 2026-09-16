@@ -71,6 +71,13 @@ describe('classify', () => {
     expect(item.category).toBe('needs_action');
   });
 
+  it('to-do issue with no PR -> needs_action, not fyi — assigned, unstarted work is not "informational"', () => {
+    const item = makeItem({ jira: makeIssue({ status: 'To Do', statusCategory: 'To Do', priority: 'Medium' }) });
+    classify(item);
+    expect(item.category).toBe('needs_action');
+    expect(item.reasons.some((r) => r.includes("hasn't been started"))).toBe(true);
+  });
+
   it('high priority bumps urgency', () => {
     const item = makeItem({ jira: makeIssue({ status: 'To Do', statusCategory: 'To Do', priority: 'High' }) });
     classify(item);
@@ -92,8 +99,8 @@ describe('classify', () => {
     expect(item.category).toBe('slack_mention');
   });
 
-  it('default is fyi / low', () => {
-    const item = makeItem({ jira: makeIssue({ status: 'To Do', statusCategory: 'To Do', priority: 'Low' }) });
+  it('default is fyi / low when nothing matches at all (no jira issue, no PR, no Slack signal)', () => {
+    const item = makeItem({ jira: null, prs: [] });
     classify(item);
     expect(item.category).toBe('fyi');
     expect(item.urgency).toBe('low');
