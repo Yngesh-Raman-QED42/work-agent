@@ -39,6 +39,30 @@ export const SCREENSHOT_STEPS_PATH = '.work-agent/screenshot-steps.json';
 export const SCREENSHOT_OUTPUT_DIR = '.work-agent/screenshots';
 export const DEFAULT_PREVIEW_PORT = 3000;
 
+// Work Agent's own .env vars (see .env.example) must never leak into the
+// target repo's dev server. WorktreeManager.copyEnvFiles already copied
+// the TARGET repo's own .env into this exact worktree specifically so the
+// preview server can load its own config from it — but dotenv/Next.js
+// precedence never overrides an already-set process env var with one from
+// a .env file. Inheriting process.env wholesale (as this used to) means
+// Work Agent's own DATABASE_URL (its own Postgres, an entirely different
+// schema) silently wins over the target app's own .env, and every page
+// 500s against a database that doesn't have the target app's tables —
+// which looks identical to "dev server never became ready" from outside.
+const WORK_AGENT_OWN_ENV_KEYS = [
+  'DATABASE_URL',
+  'JIRA_BASE_URL',
+  'JIRA_EMAIL',
+  'JIRA_API_TOKEN',
+  'GITHUB_TOKEN',
+  'SLACK_USER_TOKEN',
+  'SLACK_USER_ID',
+  'SLACK_BOT_TOKEN',
+  'WORK_AGENT_MODE',
+  'DASHBOARD_PORT',
+  'DASHBOARD_REFRESH_MINUTES',
+];
+
 export async function readScreenshotSteps(worktreePath: string): Promise<ScreenshotStep[] | null> {
   const fullPath = path.join(worktreePath, SCREENSHOT_STEPS_PATH);
   if (!existsSync(fullPath)) return null;
@@ -263,9 +287,11 @@ export class PlaywrightScreenshotCapture implements ScreenshotCapture {
     recipe: PreviewRecipe,
   ): Promise<{ child: ChildProcess; getOutput: () => string }> {
     const [bin, ...args] = recipe.startCommand;
+    const cleanEnv = { ...process.env };
+    for (const key of WORK_AGENT_OWN_ENV_KEYS) delete cleanEnv[key];
     const child = spawn(bin!, args, {
       cwd: worktreePath,
-      env: { ...process.env, ...recipe.env, PORT: String(recipe.port) },
+      env: { ...cleanEnv, ...recipe.env, PORT: String(recipe.port) },
       detached: true, // own process group, so stopServer can kill child processes it spawns (e.g. next dev's own children) too
       stdio: ['ignore', 'pipe', 'pipe'],
     });

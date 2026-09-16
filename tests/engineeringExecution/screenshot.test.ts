@@ -185,6 +185,37 @@ describe('PlaywrightScreenshotCapture (real browser, real server)', () => {
     await expect(fetch(`http://localhost:${port}/`)).rejects.toThrow();
   }, 45_000);
 
+  it("never leaks Work Agent's own env vars (e.g. DATABASE_URL) into the target app's dev server", async () => {
+    // Simulates exactly what a real run does: Work Agent's own process has
+    // its own DATABASE_URL loaded (from its own .env) when it spawns the
+    // target app's preview server.
+    const originalDbUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = 'postgres://work-agent-own-db-must-not-leak';
+    try {
+      const worktree = makeWorktree();
+      writeFileSync(
+        join(worktree, 'server.mjs'),
+        `import { writeFileSync } from 'node:fs';
+         import { createServer } from 'node:http';
+         writeFileSync('env-seen.txt', String(process.env.DATABASE_URL));
+         const port = Number(process.env.PORT);
+         createServer((req, res) => { res.writeHead(200); res.end('ok'); }).listen(port);`,
+      );
+      const port = 42130 + (process.pid % 500);
+      const recipe: PreviewRecipe = { startCommand: ['node', 'server.mjs'], port, readyPath: '/', readyTimeoutMs: 15_000, env: {} };
+
+      const capture = new PlaywrightScreenshotCapture();
+      await capture.capture(worktree, recipe, [{ label: 'x', path: '/' }]);
+
+      const seenEnv = readFileSync(join(worktree, 'env-seen.txt'), 'utf-8');
+      expect(seenEnv).not.toContain('work-agent-own-db-must-not-leak');
+      expect(seenEnv).toBe('undefined'); // stripped entirely, not overridden with some other value
+    } finally {
+      if (originalDbUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = originalDbUrl;
+    }
+  }, 20_000);
+
   it('fails fast with a clear reason when the port is already occupied, instead of the generic timeout', async () => {
     const { createServer } = await import('node:net');
     const port = 41730 + (process.pid % 500);
