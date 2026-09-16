@@ -1,0 +1,34 @@
+{
+  "jira": {
+    "myProjects": []
+  },
+  "github": {
+    "approvedRepos": ["your-org/your-repo"],
+    "repoMap": {
+      "PROJ": "your-org/your-repo"
+    },
+    "repoLocalPaths": {
+      "your-org/your-repo": "/absolute/path/to/your/local/clone"
+    },
+    "repoDefaultBranches": {
+      "your-org/your-repo": "main"
+    },
+    "previewRecipes": {
+      "your-org/your-repo": {
+        "startCommand": ["npm", "run", "dev"],
+        "port": 3000,
+        "readyPath": "/",
+        "readyTimeoutMs": 30000,
+        "env": {},
+        "testLogin": {
+          "emailSelector": "input[name=\"email\"]",
+          "email": "test-user@example.com",
+          "submitSelector": "text=Sign in (test)"
+        }
+      }
+    }
+  },
+  "slack": {
+    "relevantChannels": []
+  }
+}

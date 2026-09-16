@@ -1,0 +1,82 @@
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, existsSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { WorktreeManager } from '../../src/agents/engineeringExecution/worktree.js';
+import { GitCliOps } from '../../src/agents/engineeringExecution/gitOps.js';
+
+function run(cmd: string[], cwd: string) {
+  execFileSync(cmd[0]!, cmd.slice(1), { cwd });
+}
+
+describe('git plumbing (real git, throwaway scratch repo, never touches any real project)', () => {
+  let root: string;
+  let bareRemote: string;
+  let localRepo: string;
+  let worktreesRoot: string;
+  let manager: WorktreeManager;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'work-agent-git-test-'));
+    bareRemote = join(root, 'remote.git');
+    localRepo = join(root, 'local');
+    worktreesRoot = join(root, 'worktrees');
+
+    run(['git', 'init', '--bare', bareRemote], root);
+    run(['git', 'clone', bareRemote, localRepo], root);
+    run(['git', 'config', 'user.email', 'test@example.com'], localRepo);
+    run(['git', 'config', 'user.name', 'Test'], localRepo);
+    writeFileSync(join(localRepo, 'README.md'), 'hello\n');
+    run(['git', 'add', '-A'], localRepo);
+    run(['git', 'commit', '-m', 'initial commit'], localRepo);
+    run(['git', 'branch', '-M', 'main'], localRepo);
+    run(['git', 'push', '-u', 'origin', 'main'], localRepo);
+
+    manager = new WorktreeManager(localRepo, worktreesRoot);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('creating a worktree does not disturb the primary checkout', async () => {
+    const before = execFileSync('git', ['branch', '--show-current'], { cwd: localRepo }).toString().trim();
+    const path = await manager.create('test-task', 'main');
+    expect(existsSync(path)).toBe(true);
+    expect(existsSync(join(path, 'README.md'))).toBe(true);
+    const after = execFileSync('git', ['branch', '--show-current'], { cwd: localRepo }).toString().trim();
+    expect(after).toBe(before);
+  });
+
+  it('removing a worktree cleans it up', async () => {
+    const path = await manager.create('test-task', 'main');
+    await manager.remove(path);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('full branch/commit/push round trip lands on the "remote"', async () => {
+    const path = await manager.create('feature-task', 'main');
+    const ops = new GitCliOps();
+
+    await ops.createBranch(path, 'work-agent/feature-task');
+    writeFileSync(join(path, 'new_file.txt'), 'new content\n');
+    const committed = await ops.commitAll(path, 'add new_file.txt');
+    expect(committed).toBe(true);
+
+    const diff = await ops.diffStat(path, 'origin/main');
+    expect(diff).toContain('new_file.txt');
+
+    await ops.push(path, 'work-agent/feature-task');
+
+    const branches = execFileSync('git', ['branch', '-a'], { cwd: bareRemote }).toString();
+    expect(branches).toContain('work-agent/feature-task');
+  });
+
+  it('commitAll returns false when nothing changed', async () => {
+    const path = await manager.create('no-op-task', 'main');
+    const ops = new GitCliOps();
+    await ops.createBranch(path, 'work-agent/no-op-task');
+    expect(await ops.commitAll(path, 'nothing changed')).toBe(false);
+  });
+});

@@ -1,0 +1,1008 @@
+<title>Work Agent Architecture</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --bg: #F4F7F8;
+    --surface: #FFFFFF;
+    --surface-2: #E9EFF0;
+    --surface-3: #DEE8E9;
+    --text: #10181A;
+    --text-muted: #4B5D60;
+    --text-faint: #7C8C8E;
+    --border: #D3DEDF;
+    --accent: #0E7C74;
+    --accent-strong: #0A5B55;
+    --accent-wash: #E3F1EF;
+    --ok: #2E8B57;
+    --ok-wash: #E5F3EA;
+    --warn: #B9770E;
+    --warn-wash: #FBF0DD;
+    --danger: #B23A34;
+    --danger-wash: #FBE9E7;
+    --mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+    --sans: 'IBM Plex Sans', -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0B1414;
+      --surface: #101B1B;
+      --surface-2: #162323;
+      --surface-3: #1D2C2C;
+      --text: #E7F1F0;
+      --text-muted: #9DB2B0;
+      --text-faint: #6C8280;
+      --border: #223333;
+      --accent: #2BB3A3;
+      --accent-strong: #4FD1C0;
+      --accent-wash: #142826;
+      --ok: #4CAF7D;
+      --ok-wash: #132821;
+      --warn: #E0A73C;
+      --warn-wash: #2B2210;
+      --danger: #E0685F;
+      --danger-wash: #2B1715;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0B1414;
+    --surface: #101B1B;
+    --surface-2: #162323;
+    --surface-3: #1D2C2C;
+    --text: #E7F1F0;
+    --text-muted: #9DB2B0;
+    --text-faint: #6C8280;
+    --border: #223333;
+    --accent: #2BB3A3;
+    --accent-strong: #4FD1C0;
+    --accent-wash: #142826;
+    --ok: #4CAF7D;
+    --ok-wash: #132821;
+    --warn: #E0A73C;
+    --warn-wash: #2B2210;
+    --danger: #E0685F;
+    --danger-wash: #2B1715;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent); color: #fff; }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+  .wrap-wide { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  nav.topbar {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-inner {
+    max-width: 1080px; margin: 0 auto; padding: 0 24px;
+    display: flex; align-items: center; gap: 24px; height: 52px;
+    overflow-x: auto;
+  }
+  .wordmark {
+    font-family: var(--mono); font-weight: 600; font-size: 14px;
+    color: var(--text); white-space: nowrap; letter-spacing: 0.01em;
+  }
+  .navlinks { display: flex; gap: 18px; white-space: nowrap; }
+  .navlinks a {
+    font-family: var(--mono); font-size: 12.5px; color: var(--text-muted);
+    text-decoration: none; letter-spacing: 0.01em;
+  }
+  .navlinks a:hover { color: var(--accent); }
+
+  header.hero { padding: 56px 0 40px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);
+    margin: 0 0 14px;
+  }
+  h1.title {
+    font-family: var(--mono); font-weight: 700; font-size: clamp(32px, 5vw, 46px);
+    line-height: 1.08; letter-spacing: -0.01em; margin: 0 0 16px; text-wrap: balance;
+  }
+  p.lede {
+    font-size: 18px; color: var(--text-muted); max-width: 640px; margin: 0;
+    text-wrap: pretty;
+  }
+
+  section { padding: 46px 0; border-top: 1px solid var(--border); }
+  section:first-of-type { border-top: none; }
+  h2.h2 {
+    font-family: var(--mono); font-weight: 600; font-size: 22px; margin: 0 0 6px;
+    scroll-margin-top: 70px; letter-spacing: -0.005em;
+  }
+  .h2-sub { color: var(--text-muted); font-size: 15px; margin: 0 0 28px; max-width: 620px; }
+  p { margin: 0 0 14px; }
+  .prose p { max-width: 680px; }
+  .prose strong { color: var(--text); font-weight: 600; }
+
+  .pgrid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 14px;
+  }
+  .pcard {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .pcard-head { display: flex; align-items: baseline; gap: 10px; }
+  .pcard-num { font-family: var(--mono); font-size: 12px; color: var(--accent); font-weight: 700; }
+  .pcard-name { font-family: var(--mono); font-weight: 600; font-size: 15.5px; }
+  .pcard-desc { font-size: 13.8px; color: var(--text-muted); line-height: 1.5; }
+
+  .group-label {
+    font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-faint); margin: 30px 0 12px;
+  }
+  .group-label:first-child { margin-top: 0; }
+
+  figure.diagram { margin: 0; }
+  .diagram-frame {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px; overflow-x: auto;
+  }
+  figcaption { margin-top: 12px; font-size: 13.5px; color: var(--text-muted); text-align: center; }
+  svg text { font-family: var(--mono); }
+
+  .ladder { display: flex; flex-direction: column; gap: 10px; }
+  .rung {
+    display: grid; grid-template-columns: 168px 1fr; gap: 18px; align-items: start;
+    background: var(--surface); border: 1px solid var(--border); border-left-width: 4px;
+    border-radius: 8px; padding: 16px 20px;
+  }
+  .rung.t1 { border-left-color: var(--ok); }
+  .rung.t2 { border-left-color: var(--accent); }
+  .rung.t3 { border-left-color: var(--warn); }
+  .rung.t4 { border-left-color: var(--danger); }
+  .rung-tag { font-family: var(--mono); font-weight: 700; font-size: 13px; }
+  .rung.t1 .rung-tag { color: var(--ok); }
+  .rung.t2 .rung-tag { color: var(--accent); }
+  .rung.t3 .rung-tag { color: var(--warn); }
+  .rung.t4 .rung-tag { color: var(--danger); }
+  .rung-tag .n { display: block; font-size: 11px; color: var(--text-faint); font-weight: 500; margin-top: 3px; }
+  .rung-body p { font-size: 14px; margin: 0 0 8px; color: var(--text); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-family: var(--mono); font-size: 11.5px; background: var(--surface-2); color: var(--text-muted); padding: 3px 9px; border-radius: 5px; }
+
+  code.inline { font-family: var(--mono); font-size: 0.9em; background: var(--surface-2); padding: 1px 6px; border-radius: 4px; color: var(--text); }
+
+  /* time-tracking section */
+  .tt-flow {
+    display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: center;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px; margin-bottom: 20px;
+  }
+  .tt-col { display: flex; flex-direction: column; gap: 6px; }
+  .tt-col .k { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+  .tt-col.auto .k { color: var(--accent); }
+  .tt-col.manual .k { color: var(--ok); }
+  .tt-col p { font-size: 13.5px; color: var(--text-muted); margin: 0; }
+  .tt-plus { font-family: var(--mono); font-weight: 700; font-size: 20px; color: var(--text-faint); text-align: center; }
+  @media (max-width: 640px) { .tt-flow { grid-template-columns: 1fr; } .tt-plus { transform: rotate(90deg); } }
+
+  .cmd { font-family: var(--mono); font-size: 13px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; padding: 10px 14px; overflow-x: auto; }
+  .cmd .prompt { color: var(--text-faint); }
+
+  .sample { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-top: 16px; }
+  .sample-head { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; }
+  .sample-row { display: flex; justify-content: space-between; font-size: 14px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .sample-row:last-child { border-bottom: none; }
+  .sample-row .t { font-family: var(--mono); font-weight: 700; color: var(--ok); font-variant-numeric: tabular-nums; }
+
+  .tblwrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+  table.eff { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 620px; }
+  table.eff th {
+    text-align: left; font-family: var(--mono); font-size: 11.5px; font-weight: 600;
+    letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint);
+    background: var(--surface-2); padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  table.eff td { padding: 13px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.eff tr:last-child td { border-bottom: none; }
+  table.eff td.act { font-weight: 600; }
+  table.eff td.before { color: var(--text-faint); }
+  table.eff td.after { color: var(--ok); font-weight: 600; }
+  .caveat { margin-top: 14px; font-size: 13px; color: var(--text-faint); border-left: 3px solid var(--border); padding-left: 12px; }
+
+  .roadmap { display: flex; flex-direction: column; gap: 0; }
+  .rmap-item { display: grid; grid-template-columns: 30px 1fr; gap: 14px; padding: 18px 0; border-bottom: 1px solid var(--border); }
+  .rmap-item:last-child { border-bottom: none; }
+  .rmap-mark { font-family: var(--mono); font-weight: 700; color: var(--accent); font-size: 14px; }
+  .rmap-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+  .rmap-body { font-size: 14px; color: var(--text-muted); max-width: 640px; }
+  .rmap-item.flagged .rmap-title::after {
+    content: 'you asked for this'; font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+    letter-spacing: 0.02em; color: var(--accent); background: var(--accent-wash);
+    padding: 2px 8px; border-radius: 20px; margin-left: 10px; vertical-align: middle;
+  }
+
+  footer { padding: 40px 0 60px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; color: var(--text-faint); }
+</style>
+
+<nav class="topbar">
+  <div class="topbar-inner">
+    <span class="wordmark">WORK_AGENT/</span>
+    <div class="navlinks">
+      <a href="#overview">Overview</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#pipelines">Pipelines</a>
+      <a href="#execution-detail">Inside Execution</a>
+      <a href="#guardrails">Guardrails</a>
+      <a href="#timetracking">Time tracking</a>
+      <a href="#productivity">Productivity</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="#sharing">Sharing status</a>
+      <a href="#requirements">What you need</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap">
+  <header class="hero" id="overview">
+    <p class="eyebrow">Engineering architecture</p>
+    <h1 class="title">Work Agent</h1>
+    <p class="lede">An autonomous work-orchestration system for Jira, Slack, and GitHub — independent agent pipelines, coordinated by one orchestrator, gated by a single human-approval queue wherever judgment matters more than policy.</p>
+  </header>
+
+  <section class="prose" style="border-top:none; padding-top:0;">
+    <p>Daily engineering work is scattered across three systems that don't talk to each other: tickets in Jira, conversations in Slack, review activity on GitHub. Building a picture of what actually needs attention today means checking all three by hand, every time.</p>
+    <p>Work Agent does that checking continuously, decides what's genuinely worth attention versus noise, and — for the narrow class of work that's safe and verifiable — does it. Everything else lands in one queue with a plain-English reason and a recommendation, and waits for a decision.</p>
+  </section>
+</div>
+
+<div class="wrap-wide">
+<section id="architecture">
+  <h2 class="h2">How it fits together</h2>
+  <p class="h2-sub">Two ways in, one pipeline, one gate before anything consequential happens.</p>
+
+  <figure class="diagram">
+    <div class="diagram-frame">
+      <svg viewBox="0 0 1180 1040" role="img" aria-label="Full architecture diagram: the Scheduler or a Live session triggers a read of Jira, Slack and GitHub, which feed the Orchestrator. Observation and Slack Intelligence run automatically on every trigger. Task Intelligence, Engineering Execution, and PR Monitoring — shown with a dashed border — only run when you ask directly in a live session. Each step's outcome forks into Verified and safe, which acts directly, or Needs your judgment, which goes to the Approval Queue. Work Log, fed by the real audit trail and your own logged time, feeds the Daily and Weekly summaries, then the Dashboard and CLI.">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
+          </marker>
+        </defs>
+
+        <g fill="currentColor" color="var(--text)">
+          <!-- connectors -->
+          <g stroke="currentColor" fill="none" opacity="0.45" stroke-width="1.25">
+            <path d="M330,80 V95 M850,80 V95 M240,95 H940 M240,95 V110 M590,95 V110 M940,95 V110" marker-end="url(#arrow)"></path>
+            <path d="M240,170 V185 M590,170 V185 M940,170 V185 M240,185 H940 M590,185 V200" marker-end="url(#arrow)"></path>
+            <path d="M590,260 V273 H140 V290" marker-end="url(#arrow)"></path>
+            <path d="M240,350 H265 M465,350 H490 M690,350 H715 M915,350 H940" marker-end="url(#arrow)"></path>
+            <path d="M140,410 V425 M365,410 V425 M590,410 V425 M815,410 V425 M1040,410 V425 M140,425 H1040 M590,425 V440" marker-end="url(#arrow)"></path>
+            <path d="M590,440 L310,460" marker-end="url(#arrow)"></path>
+            <path d="M590,440 L870,460" marker-end="url(#arrow)"></path>
+            <path d="M310,580 L340,695" marker-end="url(#arrow)"></path>
+            <path d="M870,580 L840,695" marker-end="url(#arrow)"></path>
+            <path d="M340,795 V810 M840,795 V810 M340,810 H840 M340,810 V825 M840,810 V825" marker-end="url(#arrow)"></path>
+            <path d="M340,915 V935 M840,915 V935" marker-end="url(#arrow)"></path>
+          </g>
+
+          <!-- trigger -->
+          <rect x="140" y="20" width="380" height="60" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+          <text x="330" y="45" text-anchor="middle" font-size="13" font-weight="700">Scheduler</text>
+          <text x="330" y="65" text-anchor="middle" font-size="11" opacity="0.75">persisted, restart-safe — every 30 min</text>
+          <rect x="660" y="20" width="380" height="60" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+          <text x="850" y="45" text-anchor="middle" font-size="13" font-weight="700">Live session</text>
+          <text x="850" y="65" text-anchor="middle" font-size="11" opacity="0.75">you, on demand, in chat</text>
+
+          <!-- sources -->
+          <rect x="90" y="110" width="300" height="60" rx="8" fill="none" stroke="currentColor" opacity="0.8"></rect>
+          <text x="240" y="138" text-anchor="middle" font-size="13" font-weight="700">Jira</text>
+          <text x="240" y="157" text-anchor="middle" font-size="11" opacity="0.75">Your open tickets</text>
+          <rect x="440" y="110" width="300" height="60" rx="8" fill="none" stroke="currentColor" opacity="0.8"></rect>
+          <text x="590" y="138" text-anchor="middle" font-size="13" font-weight="700">Slack</text>
+          <text x="590" y="157" text-anchor="middle" font-size="11" opacity="0.75">Channels &amp; DMs you're in</text>
+          <rect x="790" y="110" width="300" height="60" rx="8" fill="none" stroke="currentColor" opacity="0.8"></rect>
+          <text x="940" y="138" text-anchor="middle" font-size="13" font-weight="700">GitHub</text>
+          <text x="940" y="157" text-anchor="middle" font-size="11" opacity="0.75">Your PRs &amp; reviews</text>
+
+          <!-- orchestrator -->
+          <rect x="290" y="200" width="600" height="60" rx="10" fill="var(--accent-wash)" stroke="var(--accent)"></rect>
+          <text x="590" y="228" text-anchor="middle" font-size="15" font-weight="700" fill="var(--accent-strong)">Orchestrator</text>
+          <text x="590" y="248" text-anchor="middle" font-size="11.5" opacity="0.8">Coordinates every step below, in order</text>
+
+          <!-- core pipeline: 5 steps -->
+          <text x="140" y="278" text-anchor="middle" font-size="10" opacity="0.65" font-style="italic">always automatic</text>
+          <text x="815" y="278" text-anchor="middle" font-size="10" opacity="0.65" font-style="italic">only when you ask directly (dashed)</text>
+          <g font-weight="700">
+            <rect x="40" y="290" width="200" height="120" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="140" y="318" text-anchor="middle" font-size="11.5">1 · Observation</text>
+            <g font-size="10" font-weight="400" opacity="0.75">
+              <text x="140" y="340" text-anchor="middle">Collects Jira, Slack</text>
+              <text x="140" y="355" text-anchor="middle">and GitHub activity —</text>
+              <text x="140" y="370" text-anchor="middle">writes the briefing</text>
+            </g>
+
+            <rect x="265" y="290" width="200" height="120" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="365" y="318" text-anchor="middle" font-size="11.5">2 · Slack Intelligence</text>
+            <g font-size="10" font-weight="400" opacity="0.75">
+              <text x="365" y="340" text-anchor="middle">Classifies every</text>
+              <text x="365" y="355" text-anchor="middle">message into 8</text>
+              <text x="365" y="370" text-anchor="middle">categories; drops noise</text>
+            </g>
+
+            <rect x="490" y="290" width="200" height="120" rx="8" fill="var(--surface)" stroke="currentColor" stroke-dasharray="5 4" opacity="0.85"></rect>
+            <text x="590" y="318" text-anchor="middle" font-size="11.5">3 · Task Intelligence</text>
+            <g font-size="10" font-weight="400" opacity="0.75">
+              <text x="590" y="340" text-anchor="middle">New assignment found?</text>
+              <text x="590" y="355" text-anchor="middle">Checks the same</text>
+              <text x="590" y="370" text-anchor="middle">autonomy policy</text>
+            </g>
+
+            <rect x="715" y="290" width="200" height="120" rx="8" fill="var(--surface)" stroke="currentColor" stroke-dasharray="5 4" opacity="0.85"></rect>
+            <text x="815" y="318" text-anchor="middle" font-size="11.5">4 · Engineering Execution</text>
+            <g font-size="10" font-weight="400" opacity="0.75">
+              <text x="815" y="340" text-anchor="middle">Isolated worktree,</text>
+              <text x="815" y="355" text-anchor="middle">independently verified,</text>
+              <text x="815" y="370" text-anchor="middle">draft PR only</text>
+            </g>
+
+            <rect x="940" y="290" width="200" height="120" rx="8" fill="var(--surface)" stroke="currentColor" stroke-dasharray="5 4" opacity="0.85"></rect>
+            <text x="1040" y="318" text-anchor="middle" font-size="11.5">5 · PR Monitoring</text>
+            <g font-size="10" font-weight="400" opacity="0.75">
+              <text x="1040" y="340" text-anchor="middle">Trivial feedback</text>
+              <text x="1040" y="355" text-anchor="middle">fixed directly;</text>
+              <text x="1040" y="370" text-anchor="middle">real judgment escalates</text>
+            </g>
+          </g>
+
+          <!-- fork -->
+          <rect x="40" y="460" width="540" height="120" rx="10" fill="var(--ok-wash)" stroke="var(--ok)"></rect>
+          <text x="310" y="490" text-anchor="middle" font-size="14" font-weight="700" fill="var(--ok)">Verified &amp; safe</text>
+          <g font-size="10.5" opacity="0.85">
+            <text x="310" y="510" text-anchor="middle">Tests re-run</text>
+            <text x="310" y="525" text-anchor="middle">independently; diff</text>
+            <text x="310" y="540" text-anchor="middle">scoped → acts directly</text>
+          </g>
+
+          <rect x="600" y="460" width="540" height="120" rx="10" fill="var(--warn-wash)" stroke="var(--warn)"></rect>
+          <text x="870" y="490" text-anchor="middle" font-size="14" font-weight="700" fill="var(--warn)">Needs your judgment</text>
+          <g font-size="10.5" opacity="0.85">
+            <text x="870" y="510" text-anchor="middle">Ambiguous, risky,</text>
+            <text x="870" y="525" text-anchor="middle">or failed checks →</text>
+            <text x="870" y="540" text-anchor="middle">the Approval Queue</text>
+          </g>
+
+          <!-- work log + manual time -->
+          <rect x="140" y="695" width="400" height="100" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+          <text x="340" y="725" text-anchor="middle" font-size="13" font-weight="700">Work Log — automatic</text>
+          <g font-size="10.5" opacity="0.75">
+            <text x="340" y="745" text-anchor="middle">Built from the real</text>
+            <text x="340" y="760" text-anchor="middle">audit trail above — what</text>
+            <text x="340" y="775" text-anchor="middle">happened, and when</text>
+          </g>
+
+          <rect x="640" y="695" width="400" height="100" rx="8" fill="var(--surface)" stroke="var(--accent)" stroke-dasharray="5 4" stroke-width="1.5"></rect>
+          <text x="840" y="725" text-anchor="middle" font-size="13" font-weight="700" fill="var(--accent-strong)">Manual Time Entry</text>
+          <g font-size="10.5" opacity="0.8">
+            <text x="840" y="745" text-anchor="middle">You log real minutes,</text>
+            <text x="840" y="760" text-anchor="middle">in chat — written straight</text>
+            <text x="840" y="775" text-anchor="middle">to Jira too (see below)</text>
+          </g>
+
+          <!-- reporting -->
+          <rect x="140" y="825" width="400" height="90" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+          <text x="340" y="855" text-anchor="middle" font-size="13" font-weight="700">Daily &amp; End-of-Day Briefing</text>
+          <g font-size="10.5" opacity="0.75">
+            <text x="340" y="875" text-anchor="middle">Today's real activity, plus</text>
+            <text x="340" y="890" text-anchor="middle">any time you logged today</text>
+          </g>
+
+          <rect x="640" y="825" width="400" height="90" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+          <text x="840" y="855" text-anchor="middle" font-size="13" font-weight="700">Weekly Summary</text>
+          <g font-size="10.5" opacity="0.75">
+            <text x="840" y="875" text-anchor="middle">Hours logged this week,</text>
+            <text x="840" y="890" text-anchor="middle">grouped by ticket</text>
+          </g>
+
+          <!-- dashboard -->
+          <rect x="290" y="935" width="600" height="70" rx="10" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5"></rect>
+          <text x="590" y="965" text-anchor="middle" font-size="15" font-weight="700">Dashboard &amp; CLI</text>
+          <text x="590" y="985" text-anchor="middle" font-size="11.5" opacity="0.8">Everything above, in one place — plus open approvals and draft PRs waiting on you</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>A run starts from either the Scheduler or a Live session and ends on the dashboard. Observation and Slack Intelligence (solid border) run automatically on every trigger. Task Intelligence, Engineering Execution, and PR Monitoring (dashed border) are real and tested but only run when you ask directly in a live session — nothing schedules them today. Either way, an outcome forks into "verified &amp; safe" (acts directly) or "needs your judgment" (Approval Queue). Work Log — built from the real audit trail, plus your own logged time, which also reaches real Jira (see Work logging &amp; time tracking below) — feeds the Daily and Weekly summaries.</figcaption>
+  </figure>
+</section>
+</div>
+
+<div class="wrap-wide">
+<section id="pipelines">
+  <h2 class="h2">The pipelines</h2>
+  <p class="h2-sub">Seven real agents, split by how they run: four are always automatic; three are real and tested but only run when you ask directly, in a live session — nothing schedules them today.</p>
+
+  <p class="group-label">Runs automatically — every trigger</p>
+  <div class="pgrid">
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Observation</span></div>
+      <p class="pcard-desc">Collects your open Jira tickets, GitHub PRs, and relevant Slack messages; links a PR or message to the ticket it's about; classifies each into urgency and category; writes the daily briefing and diffs it against last run.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Slack Intelligence</span></div>
+      <p class="pcard-desc">Classifies every message into one of 8 categories — urgent, task assignment, decision needed, action needed, response needed, important context, informational, irrelevant. Only the first six get remembered; the rest is discarded.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Work Log · Daily · Weekly Summary</span></div>
+      <p class="pcard-desc">Reporting, built only from the real audit trail and your own logged hours — see Time Tracking below.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Scheduler</span></div>
+      <p class="pcard-desc">Restart-safe, persisted job runner. Re-triggers the three agents above on a timer with zero input — the one piece of genuinely unattended automation in the system.</p>
+    </div>
+  </div>
+
+  <p class="group-label">Real and tested — but only when you ask directly, in a live session</p>
+  <div class="pgrid">
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Task Intelligence</span></div>
+      <p class="pcard-desc">For a ticket you point it at: pulls the full context — description, comments — and runs the same autonomy policy Engineering Execution uses, to decide: clear enough to hand off, or too ambiguous without you.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Engineering Execution</span></div>
+      <p class="pcard-desc">For a ticket that clears policy: isolated git worktree, a coding agent implements it, tests/lint/typecheck/build are independently re-run — never just the implementer's own word — then, optionally, a real screenshot and short GIF of the change, then branch, commit, push, draft PR. Already used to open a real pull request on a real repository, end to end.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">PR Monitoring</span></div>
+      <p class="pcard-desc">Watches review feedback on an open PR you point it at. A typo, a rename, a missing test, a docs fix gets applied directly onto the same branch. Architecture, security, scope, or product feedback gets escalated, never guessed at.</p>
+    </div>
+  </div>
+
+  <figure class="diagram" style="margin-top:28px;">
+    <div class="diagram-frame">
+      <svg viewBox="0 0 1180 500" role="img" aria-label="All agents in the project, grouped by how they run. Left column, always automatic on every trigger: Observation, Slack Intelligence, Work Log with Daily and Weekly Summary, and the Scheduler that re-triggers them. Right column, real and tested but only run when asked directly in a live session, shown with a dashed border: Task Intelligence, Engineering Execution, PR Monitoring, and Manual Time Entry feeding the Jira Worklog Writer.">
+        <g fill="currentColor" color="var(--text)">
+          <text x="310" y="25" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--accent-strong)">RUNS AUTOMATICALLY — EVERY TRIGGER</text>
+          <text x="870" y="25" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--warn)">ONLY WHEN YOU ASK DIRECTLY, IN A LIVE SESSION</text>
+
+          <g font-weight="700" font-size="13">
+            <rect x="40" y="45" width="540" height="95" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="310" y="72" text-anchor="middle">Observation</text>
+            <g font-size="10.5" font-weight="400" opacity="0.75">
+              <text x="310" y="93" text-anchor="middle">Collects Jira, GitHub, and Slack;</text>
+              <text x="310" y="109" text-anchor="middle">correlates, classifies, writes the briefing</text>
+            </g>
+
+            <rect x="40" y="155" width="540" height="95" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="310" y="182" text-anchor="middle">Slack Intelligence</text>
+            <g font-size="10.5" font-weight="400" opacity="0.75">
+              <text x="310" y="203" text-anchor="middle">Classifies every message into 8 categories;</text>
+              <text x="310" y="219" text-anchor="middle">only real signal is kept</text>
+            </g>
+
+            <rect x="40" y="265" width="540" height="95" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="310" y="292" text-anchor="middle">Work Log · Daily · Weekly Summary</text>
+            <g font-size="10.5" font-weight="400" opacity="0.75">
+              <text x="310" y="313" text-anchor="middle">Built from the real audit trail —</text>
+              <text x="310" y="329" text-anchor="middle">automatic activity, never invented hours</text>
+            </g>
+
+            <rect x="40" y="375" width="540" height="95" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="310" y="402" text-anchor="middle">Scheduler</text>
+            <g font-size="10.5" font-weight="400" opacity="0.75">
+              <text x="310" y="423" text-anchor="middle">Restart-safe job runner —</text>
+              <text x="310" y="439" text-anchor="middle">re-triggers the three above on a timer</text>
+            </g>
+          </g>
+
+          <g font-weight="700" font-size="13">
+            <rect x="600" y="45" width="540" height="95" rx="8" fill="var(--surface)" stroke="currentColor" stroke-dasharray="5 4" opacity="0.85"></rect>
+            <text x="870" y="72" text-anchor="middle">Task Intelligence</text>
+            <g font-size="10.5" font-weight="400" opacity="0.75">
+              <text x="870" y="93" text-anchor="middle">For a new assignment: pulls full ticket</text>
+              <text x="870" y="109" text-anchor="middle">context, checks the same autonomy policy</text>
+            </g>
+
+            <rect x="600" y="155" width="540" height="95" rx="8" fill="var(--surface)" stroke="currentColor" stroke-dasharray="5 4" opacity="0.85"></rect>
+            <text x="870" y="182" text-anchor="middle">Engineering Execution</text>
+            <g font-size="10.5" font-weight="400" opacity="0.75">
+              <text x="870" y="203" text-anchor="middle">Worktree → implement → independently</text>
+              <text x="870" y="219" text-anchor="middle">re-verify → safety gate → draft PR</text>
+            </g>
+
+            <rect x="600" y="265" width="540" height="95" rx="8" fill="var(--surface)" stroke="currentColor" stroke-dasharray="5 4" opacity="0.85"></rect>
+            <text x="870" y="292" text-anchor="middle">PR Monitoring</text>
+            <g font-size="10.5" font-weight="400" opacity="0.75">
+              <text x="870" y="313" text-anchor="middle">Classifies review feedback — fixes the</text>
+              <text x="870" y="329" text-anchor="middle">trivial, escalates real judgment calls</text>
+            </g>
+
+            <rect x="600" y="375" width="540" height="95" rx="8" fill="var(--surface)" stroke="var(--accent)" stroke-dasharray="5 4" stroke-width="1.5"></rect>
+            <text x="870" y="402" fill="var(--accent-strong)" text-anchor="middle">Manual Time Entry → Jira Worklog Writer</text>
+            <g font-size="10.5" font-weight="400" opacity="0.8">
+              <text x="870" y="423" text-anchor="middle">You ask directly — logs real minutes</text>
+              <text x="870" y="439" text-anchor="middle">straight to Jira, right away</text>
+            </g>
+          </g>
+        </g>
+      </svg>
+    </div>
+    <figcaption>Every agent and pipeline in the project, at a glance. The left column runs with zero input once the Scheduler is started. The right column is equally real and tested — Engineering Execution has genuinely opened a real pull request end to end — but nothing triggers it automatically; it runs when you ask for it in a live chat session.</figcaption>
+  </figure>
+</section>
+</div>
+
+<div class="wrap-wide">
+<section id="execution-detail">
+  <h2 class="h2">Inside Engineering Execution</h2>
+  <p class="h2-sub">The one pipeline that touches real code. Here is exactly what it checks, at every step, before anything reaches a repository.</p>
+
+  <p class="group-label">A ticket only reaches this pipeline if it passes every one of these</p>
+  <div class="pgrid">
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Issue type, priority &amp; status</span></div>
+      <p class="pcard-desc">Only a <code class="inline">task</code> or <code class="inline">bug</code>, only <code class="inline">low</code>/<code class="inline">medium</code> priority — never <code class="inline">high</code>/<code class="inline">urgent</code> — and only if Jira's own status is <code class="inline">to do</code>.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Enough description to act on</span></div>
+      <p class="pcard-desc">At least 80 characters of real description. Anything shorter reads as "not enough context to implement safely" and is left alone.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">No explicit hold instruction</span></div>
+      <p class="pcard-desc">The full text — description <em>and every comment</em> — is checked for phrases like "don't start," "keep on hold," "paused for now." Any match disqualifies it immediately.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Nothing sensitive</span></div>
+      <p class="pcard-desc">Auth, permissions, security, payments, billing, credentials, PII — excluded regardless of how small the change looks, because the blast radius isn't visible from the diff alone.</p>
+    </div>
+  </div>
+
+  <p class="group-label">Before a commit is ever made, the safety gate checks</p>
+  <div class="pgrid">
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Every check actually passes</span></div>
+      <p class="pcard-desc">Tests, lint, typecheck, and build are re-run independently inside the worktree — the implementer's own claim of success is never trusted on its own.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">The diff is scoped</span></div>
+      <p class="pcard-desc">No more than 15 changed files, and never empty. Too large a change or a no-op both stop here rather than proceeding.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">No forbidden paths touched</span></div>
+      <p class="pcard-desc">CI workflow files, <code class="inline">.env*</code>, database migrations, and lockfiles can never be part of an autonomous change, no matter what else passed.</p>
+    </div>
+  </div>
+
+  <p class="group-label">Once the gate passes, one optional extra: showing the change</p>
+  <div class="pgrid">
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Opt-out, not opt-in</span></div>
+      <p class="pcard-desc">Any repo Engineering Execution already works in gets a best-effort attempt automatically — its own <code class="inline">package.json</code> "dev" script and port 3000, auto-detected, no config needed. A repo can disable this explicitly; a config entry can override the command, port, or add a documented test-login for an app that needs signing in.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">A real headless browser</span></div>
+      <p class="pcard-desc">The app's own dev server is started inside the isolated worktree; a headless Chromium (Playwright) navigates to the changed page, optionally clicks or fills something, and screenshots it — genuinely rendered, not simulated.</p>
+    </div>
+    <div class="pcard">
+      <div class="pcard-head"><span class="pcard-name">Never blocks the PR</span></div>
+      <p class="pcard-desc">A dev server that never comes up, or a selector that doesn't match, is logged and skipped — the PR still opens exactly as it would without this step. A screenshot is evidence, never a gate.</p>
+    </div>
+  </div>
+
+  <figure class="diagram" style="margin-top:28px;">
+    <div class="diagram-frame">
+      <svg viewBox="0 0 1180 300" role="img" aria-label="Engineering Execution's internal 9-step pipeline: Select, Resolve repo, Worktree, Implement, Verify, Gate, Screenshot, Commit and push, Draft PR. Resolve repo, Implement, Gate, and an empty diff after Commit and push can each escalate straight to the Approval Queue instead of proceeding. Screenshot capture never escalates — a failure there is only ever logged and skipped. Select failing to find an eligible ticket quietly does nothing and waits for the next cycle. A successful Draft PR is picked up by the PR Monitoring pipeline.">
+        <defs>
+          <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
+          </marker>
+        </defs>
+        <g fill="currentColor" color="var(--text)">
+          <g stroke="currentColor" fill="none" opacity="0.45" stroke-width="1.25">
+            <path d="M136,85 H148 M264,85 H276 M392,85 H404 M520,85 H532 M648,85 H660 M776,85 H788 M904,85 H916 M1032,85 H1044" marker-end="url(#arrow2)"></path>
+            <path d="M78,130 L143,190" stroke-dasharray="4 4" marker-end="url(#arrow2)"></path>
+            <path d="M206,130 L440,190" marker-end="url(#arrow2)"></path>
+            <path d="M462,130 L520,190" marker-end="url(#arrow2)"></path>
+            <path d="M718,130 L650,190" marker-end="url(#arrow2)"></path>
+            <path d="M974,130 L780,190" marker-end="url(#arrow2)"></path>
+            <path d="M1102,130 L1036,190" marker-end="url(#arrow2)"></path>
+          </g>
+
+          <g font-weight="700">
+            <rect x="20" y="40" width="116" height="90" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="78" y="64" text-anchor="middle" font-size="10.5">1 · Select</text>
+            <g font-size="9" font-weight="400" opacity="0.75">
+              <text x="78" y="82" text-anchor="middle">eligible ticket,</text>
+              <text x="78" y="96" text-anchor="middle">per policy</text>
+            </g>
+
+            <rect x="148" y="40" width="116" height="90" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="206" y="64" text-anchor="middle" font-size="10.5">2 · Repo lookup</text>
+            <g font-size="9" font-weight="400" opacity="0.75">
+              <text x="206" y="82" text-anchor="middle">from config</text>
+              <text x="206" y="96" text-anchor="middle" fill="var(--warn)" opacity="1">→ Approval</text>
+            </g>
+
+            <rect x="276" y="40" width="116" height="90" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="334" y="64" text-anchor="middle" font-size="10.5">3 · Worktree</text>
+            <g font-size="9" font-weight="400" opacity="0.75">
+              <text x="334" y="82" text-anchor="middle">isolated git</text>
+              <text x="334" y="96" text-anchor="middle">clone, off base</text>
+            </g>
+
+            <rect x="404" y="40" width="116" height="90" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="462" y="64" text-anchor="middle" font-size="10.5">4 · Implement</text>
+            <g font-size="9" font-weight="400" opacity="0.75">
+              <text x="462" y="82" text-anchor="middle">full context</text>
+              <text x="462" y="96" text-anchor="middle" fill="var(--warn)" opacity="1">→ Approval</text>
+            </g>
+
+            <rect x="532" y="40" width="116" height="90" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="590" y="64" text-anchor="middle" font-size="10.5">5 · Verify</text>
+            <g font-size="9" font-weight="400" opacity="0.75">
+              <text x="590" y="82" text-anchor="middle">tests, lint,</text>
+              <text x="590" y="96" text-anchor="middle">typecheck, build</text>
+            </g>
+
+            <rect x="660" y="40" width="116" height="90" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="718" y="64" text-anchor="middle" font-size="10.5">6 · Gate</text>
+            <g font-size="9" font-weight="400" opacity="0.75">
+              <text x="718" y="82" text-anchor="middle">scoped &amp; safe?</text>
+              <text x="718" y="96" text-anchor="middle" fill="var(--warn)" opacity="1">→ Approval</text>
+            </g>
+
+            <rect x="788" y="40" width="116" height="90" rx="8" fill="var(--surface)" stroke="var(--accent)" stroke-dasharray="5 4" stroke-width="1.5"></rect>
+            <text x="846" y="64" text-anchor="middle" font-size="10.5" fill="var(--accent-strong)">7 · Screenshot</text>
+            <g font-size="9" font-weight="400" opacity="0.8">
+              <text x="846" y="82" text-anchor="middle">optional — never</text>
+              <text x="846" y="96" text-anchor="middle">blocks the PR</text>
+            </g>
+
+            <rect x="916" y="40" width="116" height="90" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+            <text x="974" y="64" text-anchor="middle" font-size="10.5">8 · Commit/push</text>
+            <g font-size="9" font-weight="400" opacity="0.75">
+              <text x="974" y="82" text-anchor="middle">new branch,</text>
+              <text x="974" y="96" text-anchor="middle">then push</text>
+            </g>
+
+            <rect x="1044" y="40" width="116" height="90" rx="8" fill="var(--ok-wash)" stroke="var(--ok)"></rect>
+            <text x="1102" y="64" text-anchor="middle" font-size="10.5" fill="var(--ok)">9 · Draft PR</text>
+            <g font-size="9" font-weight="400" opacity="0.85">
+              <text x="1102" y="82" text-anchor="middle">opened, never</text>
+              <text x="1102" y="96" text-anchor="middle">merged</text>
+            </g>
+          </g>
+
+          <rect x="18" y="190" width="250" height="90" rx="8" fill="none" stroke="currentColor" stroke-dasharray="3 4" opacity="0.85"></rect>
+          <text x="143" y="215" text-anchor="middle" font-size="12" font-weight="700">No eligible ticket</text>
+          <g font-size="9.5" opacity="0.75">
+            <text x="143" y="235" text-anchor="middle">Nothing happens —</text>
+            <text x="143" y="250" text-anchor="middle">tries again next cycle</text>
+            <text x="143" y="265" text-anchor="middle">(no approval filed)</text>
+          </g>
+
+          <rect x="340" y="190" width="500" height="90" rx="10" fill="var(--warn-wash)" stroke="var(--warn)"></rect>
+          <text x="590" y="218" text-anchor="middle" font-size="13.5" font-weight="700" fill="var(--warn)">Approval Queue</text>
+          <g font-size="11" opacity="0.85">
+            <text x="590" y="240" text-anchor="middle">Any of steps 2, 4, 6 — or step 8 if the</text>
+            <text x="590" y="256" text-anchor="middle">commit produces no diff — land here instead</text>
+          </g>
+
+          <rect x="910" y="190" width="252" height="90" rx="8" fill="none" stroke="currentColor" opacity="0.85"></rect>
+          <text x="1036" y="215" text-anchor="middle" font-size="12" font-weight="700">Opened as a draft PR</text>
+          <g font-size="9.5" opacity="0.75">
+            <text x="1036" y="235" text-anchor="middle">→ picked up by</text>
+            <text x="1036" y="250" text-anchor="middle">PR Monitoring</text>
+            <text x="1036" y="265" text-anchor="middle">(pipeline step 5)</text>
+          </g>
+        </g>
+      </svg>
+    </div>
+    <figcaption>Nine steps, run in order, every time a ticket qualifies. Repo lookup, Implement, and Gate can each stop the whole run and escalate to the Approval Queue instead of proceeding — as can a commit that turns out empty. Screenshot is the one step that can never escalate or block — it either adds evidence to the PR or quietly does nothing. Only a clean run all the way through reaches a draft PR.</figcaption>
+  </figure>
+</section>
+</div>
+
+<div class="wrap">
+<section id="guardrails">
+  <h2 class="h2">The guardrail model</h2>
+  <p class="h2-sub">Four tiers. Autonomy is earned by verifiability, not assumed by default.</p>
+
+  <div class="ladder">
+    <div class="rung t1">
+      <div class="rung-tag">Always automatic<span class="n">Tier 1</span></div>
+      <div class="rung-body">
+        <p>Reading Jira, Slack, and GitHub; correlating and classifying; generating briefings. Nothing here changes anything.</p>
+        <div class="chips"><span class="chip">read tickets</span><span class="chip">read Slack</span><span class="chip">read PRs</span><span class="chip">classify</span></div>
+      </div>
+    </div>
+    <div class="rung t2">
+      <div class="rung-tag">No extra approval, once verified<span class="n">Tier 2</span></div>
+      <div class="rung-body">
+        <p>Once you've asked it to work on a ticket: implementing it inside an isolated worktree and opening a draft PR, without pausing to ask again — but only after independent re-verification and a diff-safety check (no CI config, no <code class="inline">.env</code>, no lockfiles, no migrations, no more than 15 files changed).</p>
+        <div class="chips"><span class="chip">isolated worktree</span><span class="chip">re-run tests</span><span class="chip">scoped diff</span><span class="chip">draft PR only</span></div>
+      </div>
+    </div>
+    <div class="rung t3">
+      <div class="rung-tag">Gated — Approval Queue<span class="n">Tier 3</span></div>
+      <div class="rung-body">
+        <p>Anything a policy can't confidently classify: ambiguous tickets, sensitive-keyword tickets (permissions, security, payments), review feedback needing real judgment, an execution run that failed its checks.</p>
+        <div class="chips"><span class="chip">ambiguous ticket</span><span class="chip">sensitive keywords</span><span class="chip">judgment-call feedback</span><span class="chip">failed checks</span></div>
+      </div>
+    </div>
+    <div class="rung t4">
+      <div class="rung-tag">Never, by design<span class="n">Tier 4</span></div>
+      <div class="rung-body">
+        <p>Regardless of approval settings: merging a PR, deploying anything, sending a Slack message today, touching CI config, env files, lockfiles, or migrations autonomously.</p>
+        <div class="chips"><span class="chip">merge</span><span class="chip">deploy</span><span class="chip">send message</span><span class="chip">touch CI/env/migrations</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+</div>
+
+<div class="wrap">
+<section id="timetracking">
+  <h2 class="h2">Work logging &amp; time tracking</h2>
+  <p class="h2-sub">This is the end-to-end version: real hours, written to real Jira, on real tickets — not a local-only simulation.</p>
+
+  <div class="prose">
+    <p>Every pipeline above writes real, timestamped events as it works — a ticket picked up, a PR opened, a review cycle. That trail is <strong>Work Log</strong>, and it's automatic. But no part of this system watches a clock, so it will never guess at how long anything took — a guess is a fabrication, and this system doesn't fabricate.</p>
+    <p>Instead, two real sources of duration feed one Jira writer, through two different levels of trust:</p>
+  </div>
+
+  <div class="tt-flow">
+    <div class="tt-col auto">
+      <div class="k">Automatic — gated</div>
+      <p>When Engineering Execution finishes a ticket, it measures the <strong>real elapsed wall-clock time</strong> from picking up the task to opening the draft PR — never an estimate. That duration waits in the <strong>Approval Queue</strong>; nothing is written to Jira until you approve it.</p>
+    </div>
+    <div class="tt-plus">+</div>
+    <div class="tt-col manual">
+      <div class="k">Ad hoc — already approved</div>
+      <p>You just ask, in chat: <em>"log 30 minutes on PROJ-56 for last Friday."</em> Asking directly counts as your approval, so this writes to Jira immediately — including backdating to a specific day.</p>
+    </div>
+  </div>
+
+  <figure class="diagram" style="margin-top:24px;">
+    <div class="diagram-frame">
+      <svg viewBox="0 0 1180 580" role="img" aria-label="Time logging flow diagram: Engineering Execution measures real elapsed time and files it to the Approval Queue, which on approval reaches the Jira Worklog Writer. A chat-requested ad hoc log skips the queue, since asking directly counts as approval, and reaches the same writer. The writer posts to Jira's own worklog endpoint and also records a matching entry in the local Work Log. Jira is the source of truth; op-intelligence mirrors it hourly, so a worklog written here shows up there automatically.">
+        <defs>
+          <marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
+          </marker>
+        </defs>
+        <g fill="currentColor" color="var(--text)">
+          <g stroke="currentColor" fill="none" opacity="0.45" stroke-width="1.25">
+            <path d="M250,110 V150" marker-end="url(#arrow3)"></path>
+            <path d="M250,220 V250 L480,268" marker-end="url(#arrow3)"></path>
+            <path d="M930,110 V250 L700,268" marker-end="url(#arrow3)"></path>
+            <path d="M590,340 V360 L330,388" marker-end="url(#arrow3)"></path>
+            <path d="M590,360 L850,388" marker-end="url(#arrow3)"></path>
+            <path d="M330,470 V488" marker-end="url(#arrow3)"></path>
+          </g>
+
+          <rect x="60" y="30" width="380" height="80" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+          <text x="250" y="60" text-anchor="middle" font-size="13.5" font-weight="700">Engineering Execution</text>
+          <text x="250" y="80" text-anchor="middle" font-size="11" opacity="0.75">measures real elapsed time</text>
+          <text x="250" y="96" text-anchor="middle" font-size="11" opacity="0.75">task picked up → draft PR opened</text>
+
+          <rect x="740" y="30" width="380" height="80" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+          <text x="930" y="60" text-anchor="middle" font-size="13.5" font-weight="700">You, in chat</text>
+          <text x="930" y="80" text-anchor="middle" font-size="11" opacity="0.75">"log 30m on PROJ-56</text>
+          <text x="930" y="96" text-anchor="middle" font-size="11" opacity="0.75">for last Friday"</text>
+
+          <rect x="60" y="150" width="380" height="70" rx="10" fill="var(--warn-wash)" stroke="var(--warn)"></rect>
+          <text x="250" y="180" text-anchor="middle" font-size="13" font-weight="700" fill="var(--warn)">Approval Queue</text>
+          <text x="250" y="200" text-anchor="middle" font-size="11" opacity="0.85">you approve or reject</text>
+
+          <text x="930" y="185" text-anchor="middle" font-size="10.5" opacity="0.7">already approved —</text>
+          <text x="930" y="200" text-anchor="middle" font-size="10.5" opacity="0.7">you asked directly</text>
+
+          <rect x="340" y="268" width="500" height="70" rx="10" fill="var(--accent-wash)" stroke="var(--accent)"></rect>
+          <text x="590" y="298" text-anchor="middle" font-size="14" font-weight="700" fill="var(--accent-strong)">Jira Worklog Writer</text>
+          <text x="590" y="318" text-anchor="middle" font-size="11" opacity="0.85">POST /rest/api/3/issue/&#123;key&#125;/worklog</text>
+
+          <rect x="140" y="388" width="380" height="80" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+          <text x="330" y="418" text-anchor="middle" font-size="13" font-weight="700">Jira — source of truth</text>
+          <text x="330" y="438" text-anchor="middle" font-size="11" opacity="0.75">the real worklog, on the real ticket,</text>
+          <text x="330" y="454" text-anchor="middle" font-size="11" opacity="0.75">visible on your actual timesheet</text>
+
+          <rect x="660" y="388" width="380" height="80" rx="8" fill="var(--surface)" stroke="currentColor" opacity="0.85"></rect>
+          <text x="850" y="418" text-anchor="middle" font-size="13" font-weight="700">Local Work Log</text>
+          <text x="850" y="438" text-anchor="middle" font-size="11" opacity="0.75">a matching entry, so Daily/EOD</text>
+          <text x="850" y="454" text-anchor="middle" font-size="11" opacity="0.75">and Weekly Summary stay accurate</text>
+
+          <rect x="140" y="488" width="380" height="70" rx="8" fill="none" stroke="currentColor" stroke-dasharray="3 4" opacity="0.85"></rect>
+          <text x="330" y="516" text-anchor="middle" font-size="13" font-weight="700">op-intelligence</text>
+          <text x="330" y="536" text-anchor="middle" font-size="11" opacity="0.75">mirrors Jira hourly — nothing new</text>
+          <text x="330" y="550" text-anchor="middle" font-size="10.5" opacity="0.6">to build or connect on that side</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>Two different trust levels, one real write. Automatic time from a finished execution task always waits for your approval; a time log you ask for directly in chat is treated as already approved and posted right away — both end up as the same kind of real Jira worklog, which your org's own op-intelligence platform picks up on its normal hourly sync without any extra integration work.</figcaption>
+  </figure>
+
+  <div class="prose" style="margin-top:20px;">
+    <p>Backdating works the same way either path is triggered: a specific date sets Jira's own <code class="inline">started</code> field on the worklog, so "log this for last Friday" actually lands on last Friday — not on whatever day the request happened to be made.</p>
+  </div>
+
+  <div class="cmd"><span class="prompt">$</span> work-agent log-time --minutes 90 --ticket PROJ-123 --date 2026-09-11 --note "short description of the work" --jira</div>
+
+  <p class="caveat">If nothing was logged, the report says exactly that — "no hours logged this week" — instead of estimating one. The number on your timesheet is always a number you put there, and a real Jira write only ever happens after either your explicit approval or your own direct request — never on its own.</p>
+</section>
+</div>
+
+<div class="wrap-wide">
+<section id="productivity">
+  <h2 class="h2">Where the time actually goes</h2>
+  <p class="h2-sub">Reasoned estimates based on typical usage — not measured telemetry. See the caveat below.</p>
+
+  <div class="tblwrap">
+    <table class="eff">
+      <thead><tr><th>Activity</th><th>Without Work Agent</th><th>With Work Agent</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="act">Morning check-in across Jira, Slack, GitHub</td>
+          <td class="before">~15–20 min of tab-switching and re-deriving context</td>
+          <td class="after">One dashboard glance, ~2 min</td>
+        </tr>
+        <tr>
+          <td class="act">Triaging Slack for what actually needs a reply</td>
+          <td class="before">Scanning every channel and DM manually</td>
+          <td class="after">Noise pre-filtered; only the six signal categories surface</td>
+        </tr>
+        <tr>
+          <td class="act">Picking up a small, well-scoped ticket</td>
+          <td class="before">~30–45 min: read ticket, branch, boilerplate, PR description</td>
+          <td class="after">A go/no-go decision; implementation and draft PR happen unattended</td>
+        </tr>
+        <tr>
+          <td class="act">Tracking what's pending across three systems</td>
+          <td class="before">Mental notes, easy to lose between sessions</td>
+          <td class="after">One durable approval queue, persists across every session</td>
+        </tr>
+        <tr>
+          <td class="act">Preparing the weekly timesheet</td>
+          <td class="before">Reconstructing what you did from memory at the end of the week</td>
+          <td class="after">A running log of real activity plus your own logged hours, ready to submit</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caveat">These are reasoned estimates from typical usage patterns, not measured telemetry — the system deliberately does not track how long anything takes on its own, so it can never fabricate a saved-hours number either.</p>
+</section>
+</div>
+
+<div class="wrap">
+<section id="roadmap">
+  <h2 class="h2">Where this goes next</h2>
+  <p class="h2-sub">Ideas, not commitments — roughly in order of how much they'd unlock.</p>
+
+  <div class="roadmap">
+    <div class="rmap-item flagged">
+      <div class="rmap-mark">→</div>
+      <div>
+        <div class="rmap-title">Task time estimation</div>
+        <div class="rmap-body">When a new ticket is picked up, estimate effort from the whole surrounding context — related tickets, prior work in the same module, comment history — not just that ticket's own text in isolation. Closer to how an experienced engineer sizes work than a template guess.</div>
+      </div>
+    </div>
+    <div class="rmap-item">
+      <div class="rmap-mark">→</div>
+      <div>
+        <div class="rmap-title">Live Slack on the scheduler</div>
+        <div class="rmap-body">A scoped, read-only Slack token would let the scheduler classify Slack unattended the same way it already does Jira and GitHub — closing the one remaining manual step.</div>
+      </div>
+    </div>
+    <div class="rmap-item">
+      <div class="rmap-mark">→</div>
+      <div>
+        <div class="rmap-title">PR Monitoring on a timer</div>
+        <div class="rmap-body">Already built, not yet wired to the scheduler. A periodic check-and-escalate job is straightforward to add; the auto-fix step still needs a live session, same as Engineering Execution.</div>
+      </div>
+    </div>
+    <div class="rmap-item">
+      <div class="rmap-mark">→</div>
+      <div>
+        <div class="rmap-title">Approval-gated Jira edits</div>
+        <div class="rmap-body">Propose a title, description, or estimate change with a clear before/after, applied only after explicit approval — the same approve-then-act pattern the Jira Worklog Writer already uses for time logging.</div>
+      </div>
+    </div>
+    <div class="rmap-item">
+      <div class="rmap-mark">→</div>
+      <div>
+        <div class="rmap-title">Policy that learns from your decisions</div>
+        <div class="rmap-body">If you consistently approve one shape of suggestion and reject another, the autonomy policy's thresholds could tighten or loosen accordingly instead of staying fixed.</div>
+      </div>
+    </div>
+    <div class="rmap-item">
+      <div class="rmap-mark">→</div>
+      <div>
+        <div class="rmap-title">A second project, for free</div>
+        <div class="rmap-body">The system was built project-agnostic from day one — repo and project mapping is config, not code. Onboarding another real project is a config change, not new code.</div>
+      </div>
+    </div>
+  </div>
+</section>
+</div>
+
+<div class="wrap">
+<section id="sharing">
+  <h2 class="h2">Where this stands today: sharing &amp; deployment</h2>
+  <p class="h2-sub">Not a hosted service yet — here's exactly what that means for anyone else on the team.</p>
+
+  <div class="prose">
+    <p>Everything described above runs today as <strong>one person's tool on one machine</strong>. It isn't deployed anywhere, there's no shared server, and there's no such thing yet as a teammate "joining" your running instance — the architecture simply doesn't have a multi-user layer.</p>
+    <p>Bringing someone else in means giving them the codebase so they can run a <strong>second, fully independent instance</strong> — their own copy, their own credentials, their own local database. Nothing between the two instances is shared or synced.</p>
+  </div>
+
+  <div class="tblwrap">
+    <table class="eff">
+      <thead><tr><th>Aspect</th><th>Current status</th></tr></thead>
+      <tbody>
+        <tr><td class="act">Hosting</td><td>Runs locally on one machine — nothing deployed to a server, cloud, or shared host</td></tr>
+        <tr><td class="act">Multi-user access</td><td>Not built — no shared login, no central instance for a teammate to connect to</td></tr>
+        <tr><td class="act">The codebase</td><td>Each person needs their own copy of it</td></tr>
+        <tr><td class="act">Runtime</td><td>Each person needs their own Node.js and PostgreSQL running on their own machine</td></tr>
+        <tr><td class="act">Jira access</td><td>Each person's own API token — never shared between people</td></tr>
+        <tr><td class="act">GitHub access</td><td>Each person's own authenticated access to the org's repositories</td></tr>
+        <tr><td class="act">Slack access (optional)</td><td>Each person's own token, only if they want Slack read automatically</td></tr>
+        <tr><td class="act">Configuration</td><td>Project/repo mapping and credentials are per-machine files — not shared or synced across people</td></tr>
+        <tr><td class="act">Net result</td><td>Every teammate ends up running a separate, independent instance — not joining this one</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+</div>
+
+<div class="wrap">
+<section id="requirements">
+  <h2 class="h2">What you need to use it</h2>
+  <p class="h2-sub">Starting point: the code is already on your machine, and Postgres is running (see Sharing status above for that part). Here's everything else, and what each piece actually unlocks.</p>
+
+  <div class="tblwrap">
+    <table class="eff">
+      <thead><tr><th>You need</th><th>Required?</th><th>What it unlocks</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="act">A Jira API token, email, and base URL</td>
+          <td><strong>Required</strong></td>
+          <td>Reads your real tickets, and is the same credential the time-logging feature uses to write real worklogs back to Jira. One token covers both.</td>
+        </tr>
+        <tr>
+          <td class="act">GitHub authenticated (<code class="inline">gh auth login</code>)</td>
+          <td><strong>Required for Engineering Execution</strong></td>
+          <td>Lets it read your pull requests and open draft PRs. Observation and time logging both work fully without this.</td>
+        </tr>
+        <tr>
+          <td class="act">A local clone of the target repo, mapped in <code class="inline">work-agent.config.json</code></td>
+          <td><strong>Required for Engineering Execution</strong></td>
+          <td>An unmapped project always means "stop and file an approval," never a guess — so this only matters once you want autonomous code changes, not before.</td>
+        </tr>
+        <tr>
+          <td class="act">A Slack user OAuth token</td>
+          <td>Optional</td>
+          <td>Only needed if you want the scheduler reading Slack <em>unattended</em>. Asking me directly in a live chat session already has real Slack access without it.</td>
+        </tr>
+        <tr>
+          <td class="act">Anything extra for time logging specifically</td>
+          <td>Nothing</td>
+          <td>It reuses the Jira token above — there's no separate credential to set up for it.</td>
+        </tr>
+        <tr>
+          <td class="act"><code class="inline">npx playwright install chromium</code> (one time)</td>
+          <td>Optional</td>
+          <td>Only needed for Engineering Execution's screenshot/GIF step. It's attempted automatically for any repo it can boot — nothing else about the pipeline depends on this.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="caveat">Every credential here is per-person and lives only in your own <code class="inline">.env</code> file on your own machine — never shared, never checked into the repo, never visible to a teammate running their own instance.</p>
+</section>
+</div>
+
+<div class="wrap">
+  <footer>WORK_AGENT — documented from the working system, not a proposal.</footer>
+</div>

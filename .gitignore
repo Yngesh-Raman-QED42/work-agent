@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+*.tsbuildinfo
+scripts/live-data/
+
+# Per-person, per-machine — see docs/architecture.html "What you need to
+# use it". Never shared between people; work-agent.config.json.example is
+# the template that ships instead.
+work-agent.config.json
+
+# Runtime/session artifacts, not source
+.runtime/
+.claude/
+
+# Real captured data from earlier prototype runs — never source
+legacy-python/data/
+**/__pycache__/
+*.pyc

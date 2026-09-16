@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: work_agent
+      POSTGRES_PASSWORD: work_agent_dev_only
+      POSTGRES_DB: work_agent
+    ports:
+      # Deliberately NOT 5432 — that port is already used by the
+      # operational-intelligence project's own Postgres container on this
+      # machine. This is a separate database for a separate system.
+      - "5433:5432"
+    volumes:
+      - work_agent_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U work_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  work_agent_postgres_data:
