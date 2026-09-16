@@ -21,6 +21,7 @@ export interface MonitorPrDeps {
   repoLocalPath: string;
   gateConfig?: GateConfig;
   checkCommands?: Array<[string, string[]]>;
+  checkRetries?: number;
 }
 
 function summarizeFeedback(escalations: FeedbackClassification[]): string {
@@ -144,7 +145,7 @@ Report back: what you changed, and the test/lint/typecheck/build results.
     return { outcome: 'escalated', pr, reasons: [outcome.summary], worktreePath };
   }
 
-  const checks = await runChecks(worktreePath, deps.checkCommands ?? DEFAULT_COMMANDS);
+  const checks = await runChecks(worktreePath, deps.checkCommands ?? DEFAULT_COMMANDS, undefined, deps.checkRetries);
   await audit.log('pr_monitor_checks_run', { results: checks.map((c) => ({ name: c.name, passed: c.passed })) });
 
   const diffStat = await deps.gitOps.diffStat(worktreePath, 'HEAD');

@@ -145,6 +145,10 @@ export interface FinishExecutionDeps {
   prCreator: PullRequestCreator;
   gateConfig?: GateConfig;
   checkCommands?: Array<[string, string[]]>;
+  // Test seam — production always uses runChecks' own default (2 retries).
+  // A real failure still reports failed after using all of them; this only
+  // lets a test that deliberately fails a check skip the retry delay.
+  checkRetries?: number;
   screenshotCapture?: ScreenshotCapture;
 }
 
@@ -173,7 +177,7 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
     return { status: 'stopped_ambiguous', task, checks: [], reasons: [outcome.summary], worktreePath };
   }
 
-  const checks = await runChecks(worktreePath, deps.checkCommands ?? DEFAULT_COMMANDS);
+  const checks = await runChecks(worktreePath, deps.checkCommands ?? DEFAULT_COMMANDS, undefined, deps.checkRetries);
   await audit.log('execution_checks_run', { results: checks.map((c) => ({ name: c.name, passed: c.passed })) });
   await upsertTask(db, task.key, { status: 'checking', validationStatus: checks });
 
@@ -347,6 +351,7 @@ export interface RunExecutionDeps extends StartExecutionDeps {
   prCreator: PullRequestCreator;
   gateConfig?: GateConfig;
   checkCommands?: Array<[string, string[]]>;
+  checkRetries?: number;
   // Test seam only — production code lets each run construct its own real
   // PlaywrightScreenshotCapture.
   screenshotCapture?: ScreenshotCapture;
@@ -372,6 +377,7 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
     prCreator: deps.prCreator,
     gateConfig: deps.gateConfig,
     checkCommands: deps.checkCommands,
+    checkRetries: deps.checkRetries,
     screenshotCapture: deps.screenshotCapture,
   });
 }

@@ -487,6 +487,7 @@ describe('runExecution', () => {
       prCreator: new MockPullRequestCreator(),
       worktreeManagerFactory: () => new FakeWorktreeManager(),
       checkCommands: [['test', ['false']]],
+      checkRetries: 0, // a real failure, not flakiness — skip the retry delay
     });
     expect(result.status).toBe('stopped_failed_checks');
     expect(gitOps.calls.some((c) => c[0] === 'push')).toBe(false);
