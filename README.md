@@ -167,6 +167,23 @@ example:
   `testLogin` only applies to an app with its own dev-mode auth bypass (like op-intelligence's
   "Test Environment Bypass" on `/login`) — give it the real selector and a real test account your
   app actually accepts, so the implementer never has to guess at one blind.
+
+  Two more gitignored things a fresh worktree doesn't have that a real dev server can need, both
+  handled automatically, worth knowing about if screenshots still fail to boot:
+  - `.env`/`.env.local` are copied from the primary checkout into every worktree
+    (`WorktreeManager.copyEnvFiles`) — an app that reads `DATABASE_URL` or similar at boot
+    otherwise fails or errors on every request, which looks identical to "dev server never became
+    ready" from the outside.
+  - `node_modules` is normally symlinked from the primary checkout for speed (see below), but
+    Turbopack (Next.js's dev bundler) refuses to resolve a package through a symlink that leads
+    outside the project directory — `[project]/node_modules is invalid, it points out of the
+    filesystem root`. Right before booting the preview server specifically,
+    `materializeRealNodeModules` swaps the symlink for a real `npm ci`/`install` (with
+    `--legacy-peer-deps --ignore-scripts`, since a fresh install can re-surface a peer conflict an
+    already-installed checkout tolerated), never touching package-lock.json. Every check
+    (test/lint/typecheck/build) already ran fine before this point — this only matters for
+    Turbopack/webpack-style dev servers specifically.
+
   `readyTimeoutMs` (default 60s when auto-detected) is how long to wait for the dev server to come
   up before giving up on screenshots for that run. Every worktree is a cold checkout with no build
   cache of its own (no `.next`, no `.turbo` — same reason `node_modules` needs handling; see

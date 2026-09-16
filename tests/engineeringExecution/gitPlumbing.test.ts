@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, existsSync, writeFileSync, rmSync, mkdirSync, lstatSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WorktreeManager } from '../../src/agents/engineeringExecution/worktree.js';
+import { WorktreeManager, materializeRealNodeModules } from '../../src/agents/engineeringExecution/worktree.js';
 import { GitCliOps } from '../../src/agents/engineeringExecution/gitOps.js';
 
 function run(cmd: string[], cwd: string) {
@@ -83,6 +83,36 @@ describe('git plumbing (real git, throwaway scratch repo, never touches any real
     expect(lstatSync(join(path, 'node_modules')).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(path, 'node_modules', 'marker.txt'), 'utf-8')).toBe('shared-install');
   });
+
+  it('copies .env from the primary checkout into a fresh worktree, as a real file, not a symlink', async () => {
+    writeFileSync(join(localRepo, '.env'), 'DATABASE_URL=postgres://scratch\n');
+
+    const path = await manager.create('env-copy-task', 'main');
+
+    expect(readFileSync(join(path, '.env'), 'utf-8')).toBe('DATABASE_URL=postgres://scratch\n');
+    expect(lstatSync(join(path, '.env')).isSymbolicLink()).toBe(false);
+  });
+
+  it('materializeRealNodeModules replaces the symlink with a real, working install', async () => {
+    writeFileSync(join(localRepo, 'package.json'), JSON.stringify({ name: 'scratch', version: '1.0.0' }));
+    run(['git', 'add', '-A'], localRepo);
+    run(['git', 'commit', '-m', 'add package.json'], localRepo);
+    run(['git', 'push', 'origin', 'main'], localRepo);
+    mkdirSync(join(localRepo, 'node_modules'));
+    writeFileSync(join(localRepo, 'node_modules', 'marker.txt'), 'shared-install');
+
+    const path = await manager.create('materialize-task', 'main');
+    expect(lstatSync(join(path, 'node_modules')).isSymbolicLink()).toBe(true);
+
+    await materializeRealNodeModules(path);
+
+    // A zero-dependency package.json gets no node_modules dir at all from
+    // npm — the meaningful checks are that install actually ran (the
+    // lockfile it writes) and that the old symlink is gone, so the shared
+    // marker from its target is no longer reachable from this worktree.
+    expect(existsSync(join(path, 'package-lock.json'))).toBe(true);
+    expect(existsSync(join(path, 'node_modules', 'marker.txt'))).toBe(false);
+  }, 30_000);
 
   it('falls back to a real install in the worktree when the primary checkout has never been installed', async () => {
     // Committed and pushed — the worktree is checked out from origin/main,

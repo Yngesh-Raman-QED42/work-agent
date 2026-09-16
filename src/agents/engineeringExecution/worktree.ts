@@ -1,8 +1,48 @@
 import { mkdtempSync, existsSync, mkdirSync } from 'node:fs';
-import { symlink } from 'node:fs/promises';
+import { symlink, copyFile, lstat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runOrThrow, run } from './shell.js';
+
+// Flags aimed at making a throwaway install as tolerant as possible of
+// real-world dependency-tree quirks (peer conflicts an already-installed
+// primary checkout tolerated once, that a fresh `npm ci` re-validates and
+// rejects) — safe here specifically because this never touches anything
+// committed: package-lock.json isn't rewritten by `npm ci`, and the
+// resulting node_modules is either the throwaway worktree's own fast path
+// or a screenshot-only materialization, never part of a diff.
+const PERMISSIVE_INSTALL_FLAGS = ['--no-audit', '--no-fund', '--ignore-scripts', '--legacy-peer-deps'];
+
+/**
+ * Replaces a symlinked `node_modules` (fine for tsc/eslint/vitest/build)
+ * with a real, fully-materialized one. Needed only right before booting an
+ * actual dev server: Turbopack (and likely other bundlers with similar
+ * sandboxing) refuses to resolve a package through a symlink that leads
+ * outside the project directory — "[project]/node_modules is invalid, it
+ * points out of the filesystem root" — which breaks `next dev` outright,
+ * even though the exact same symlink is perfectly fine for every check
+ * that ran earlier. Only called lazily, right before Engineering Execution
+ * boots a preview server for screenshots — paying this real-install cost
+ * on every worktree, for every ticket, would defeat the entire point of
+ * the fast symlink path in `ensureDependencies` below.
+ */
+export async function materializeRealNodeModules(worktreePath: string): Promise<void> {
+  const nodeModules = join(worktreePath, 'node_modules');
+  let isSymlink = false;
+  try {
+    isSymlink = (await lstat(nodeModules)).isSymbolicLink();
+  } catch {
+    // doesn't exist — treat the same as "needs a real install" below
+  }
+  if (existsSync(nodeModules) && !isSymlink) return; // already real
+
+  await rm(nodeModules, { recursive: true, force: true });
+  const hasLockfile = existsSync(join(worktreePath, 'package-lock.json'));
+  await runOrThrow(['npm', hasLockfile ? 'ci' : 'install', ...PERMISSIVE_INSTALL_FLAGS], {
+    cwd: worktreePath,
+    timeoutMs: 600_000,
+  });
+}
 
 /** Creates/removes an isolated `git worktree` off a repo's default branch.
  * Never touches the caller's primary checkout — that's the entire point. */
@@ -22,6 +62,7 @@ export class WorktreeManager {
       timeoutMs: 120_000,
     });
     await this.ensureDependencies(path);
+    await this.copyEnvFiles(path);
     return path;
   }
 
@@ -38,7 +79,24 @@ export class WorktreeManager {
       timeoutMs: 120_000,
     });
     await this.ensureDependencies(path);
+    await this.copyEnvFiles(path);
     return path;
+  }
+
+  /**
+   * `.env`/`.env.local` are gitignored the same way `node_modules` is, so a
+   * fresh worktree has neither — an app that reads `DATABASE_URL` (or any
+   * other runtime secret) at boot fails or errors on every request without
+   * them, which looks exactly like "the dev server never became ready" from
+   * the outside. Copied, not symlinked: these are small, and copying means
+   * nothing an implementer's dev-server run does can ever write back into
+   * the primary checkout's own `.env`.
+   */
+  private async copyEnvFiles(worktreePath: string): Promise<void> {
+    for (const name of ['.env', '.env.local']) {
+      const src = join(this.repoLocalPath, name);
+      if (existsSync(src)) await copyFile(src, join(worktreePath, name));
+    }
   }
 
   /**
@@ -63,7 +121,10 @@ export class WorktreeManager {
       return;
     }
     const hasLockfile = existsSync(join(this.repoLocalPath, 'package-lock.json'));
-    await runOrThrow(hasLockfile ? ['npm', 'ci'] : ['npm', 'install'], { cwd: worktreePath, timeoutMs: 600_000 });
+    await runOrThrow(['npm', hasLockfile ? 'ci' : 'install', ...PERMISSIVE_INSTALL_FLAGS], {
+      cwd: worktreePath,
+      timeoutMs: 600_000,
+    });
   }
 
   async remove(path: string): Promise<void> {

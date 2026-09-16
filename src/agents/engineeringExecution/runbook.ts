@@ -17,7 +17,7 @@ import { buildImplementationPrompt } from './prompt.js';
 import type { AutonomyPolicy } from './policy.js';
 import { resolveRepo } from './repoResolver.js';
 import { selectTask } from './selector.js';
-import { WorktreeManager } from './worktree.js';
+import { WorktreeManager, materializeRealNodeModules } from './worktree.js';
 import { formatMinutes } from '../workLog/timeEntry.js';
 import {
   PlaywrightScreenshotCapture,
@@ -211,6 +211,12 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
     const steps = await readScreenshotSteps(worktreePath);
     if (steps) {
       try {
+        if (!deps.screenshotCapture) {
+          // Only for the real, production capture path — see
+          // materializeRealNodeModules' own doc for why a dev server needs
+          // this even though every check above just ran fine without it.
+          await materializeRealNodeModules(worktreePath);
+        }
         const capture = deps.screenshotCapture ?? new PlaywrightScreenshotCapture();
         const result = await capture.capture(worktreePath, previewRecipe, steps);
         screenshots = result.screenshots;
