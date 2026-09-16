@@ -189,6 +189,15 @@ example:
   leave as `[]`. Observation already pulls every ticket assigned to you and every Slack message
   that mentions you or links to one of your tickets, with no allowlist required.
 
+- **`engineeringExecution.openPrAsDraft`** *(default `true`)* — whether `exec-finish` opens a
+  draft PR or a real one. Set `false` once you're ready to skip the draft step yourself; merging
+  remains something this system never does either way, regardless of this flag.
+  ```json
+  "engineeringExecution": {
+    "openPrAsDraft": false
+  }
+  ```
+
 ## What's NOT wired to run unattended, and why
 
 - **The scheduler** (`npm run scheduler`) is real, tested, and restart-safe (state lives in
