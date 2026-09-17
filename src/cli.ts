@@ -131,7 +131,7 @@ async function cmdLogTime(args: string[]) {
   // approval queue regardless of this flag.
   if (toJira && ticket) {
     try {
-      await new LiveJiraWorklogWriter().logWork(ticket, minutes, { comment: note ?? 'Logged via Work Agent', date });
+      await new LiveJiraWorklogWriter().logWork(ticket, minutes, { comment: note, date });
       console.log(`Also logged ${minutes}m to Jira on ${ticket}, dated ${date}.`);
     } catch (err) {
       console.error(`Local entry saved, but the Jira write failed: ${err}`);
@@ -209,7 +209,7 @@ async function cmdExecFinish(args: string[]) {
 
   const failed = flagValue(args, '--failed');
   const summary = flagValue(args, '--summary');
-  const outcome = failed ? { success: false, summary: failed } : { success: true, summary: summary ?? 'Implemented by a live Claude Code session.' };
+  const outcome = failed ? { success: false, summary: failed } : { success: true, summary: summary ?? 'Implemented the requested change.' };
 
   const result = await finishExecution({
     db,

@@ -46,9 +46,7 @@ describe('executeApprovedAction', () => {
     await executeApprovedAction(handle.db, makeApproval(), { getWorklogWriter: () => writer });
 
     const today = new Date().toISOString().slice(0, 10);
-    expect(writer.logged).toEqual([
-      { key: 'PROJ-1', minutes: 42, comment: 'Work Agent autonomously implemented this ticket.', date: today },
-    ]);
+    expect(writer.logged).toEqual([{ key: 'PROJ-1', minutes: 42, comment: 'Completed.', date: today }]);
 
     const entries = await timeEntriesInRange(handle.db, today, today);
     expect(entries).toHaveLength(1);
@@ -56,7 +54,7 @@ describe('executeApprovedAction', () => {
     expect(entries[0]!.minutes).toBe(42);
   });
 
-  it('builds a contextual worklog comment from the ticket summary, work summary, and PR url when present', async () => {
+  it('builds a natural worklog comment (no agent/tool attribution) from the work summary and PR url when present', async () => {
     handle = await createTestDb();
     const writer = new MockJiraWorklogWriter();
     await executeApprovedAction(
@@ -74,10 +72,23 @@ describe('executeApprovedAction', () => {
     );
 
     expect(writer.logged[0]!.comment).toBe(
-      'Work Agent autonomously implemented this ticket: Fix overlapping allocation labels. ' +
-        'Summary of changes: Added bg-surface-muted to the sticky label div. ' +
-        'PR: https://github.com/org/repo/pull/62',
+      'Added bg-surface-muted to the sticky label div. ' + 'PR: https://github.com/org/repo/pull/62',
     );
+    // The ticket's own title is already visible on the ticket itself —
+    // repeating it in the worklog comment would just be noise, and a real
+    // human wouldn't restate it either.
+    expect(writer.logged[0]!.comment).not.toContain('Fix overlapping allocation labels');
+  });
+
+  it('falls back to the ticket summary (still no attribution) when no work summary is present', async () => {
+    handle = await createTestDb();
+    const writer = new MockJiraWorklogWriter();
+    await executeApprovedAction(
+      handle.db,
+      makeApproval({ context: { taskKey: 'PROJ-1', minutes: 42, taskSummary: 'Fix overlapping allocation labels' } }),
+      { getWorklogWriter: () => writer },
+    );
+    expect(writer.logged[0]!.comment).toBe('Fix overlapping allocation labels');
   });
 
   it('never constructs the worklog writer for a non-matching action', async () => {

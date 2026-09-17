@@ -357,7 +357,7 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
   report('Branching, committing, and pushing...');
   const branchName = `work-agent/${task.key.toLowerCase()}`;
   await gitOps.createBranch(worktreePath, branchName);
-  const commitMessage = `${task.key}: ${task.summary}\n\n${outcome.summary}\n\nCo-Authored-By: Work Agent <work-agent@local>`;
+  const commitMessage = `${task.key}: ${task.summary}\n\n${outcome.summary}`;
   const committed = await gitOps.commitAll(worktreePath, commitMessage);
   if (!committed) {
     const reason = 'implementation reported success but produced no file changes';
@@ -392,12 +392,11 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
       : '';
   const asDraft = config.engineeringExecution.openPrAsDraft;
   const prBody =
-    `Autonomous implementation of [${task.key}](${task.url}).\n\n` +
+    `Fixes [${task.key}](${task.url}).\n\n` +
     `**Summary of changes:** ${outcome.summary}\n\n` +
     `**Checks:** ${checksLine}\n` +
     gifBlock +
-    screenshotsBlock +
-    `\n_Opened${asDraft ? ' as a draft' : ''} by the Work Agent — no merge, no deploy, review required before anything further happens._`;
+    screenshotsBlock;
   const prUrl = await prCreator.createPr(repo, branchName, `${task.key}: ${task.summary}`, prBody, asDraft);
   await audit.log('execution_pr_opened', { url: prUrl });
   await upsertTask(db, task.key, { prUrl });
@@ -409,7 +408,7 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
   if (deps.getIssueUpdater) {
     const updater = deps.getIssueUpdater();
     try {
-      await updater.addComment(task.key, `Work Agent implemented this: ${outcome.summary}`, [
+      await updater.addComment(task.key, outcome.summary, [
         { label: `PR: ${task.key}: ${task.summary}`, url: prUrl },
       ]);
       await audit.log('execution_jira_comment_posted', { key: task.key });

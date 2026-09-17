@@ -36,10 +36,11 @@ export async function executeApprovedAction(db: AnyDb, approval: ApprovalRow, de
 
   // taskSummary/workSummary/prUrl are only present on approvals filed by
   // this run of Work Agent — older pending rows filed before this context
-  // was added fall back to a plain comment rather than throwing.
+  // was added fall back to the ticket's own summary rather than throwing.
+  // Written as a plain, factual note — no agent/tool attribution — so it
+  // reads like any other worklog entry.
   const comment = [
-    `Work Agent autonomously implemented this ticket${taskSummary ? `: ${taskSummary}` : ''}.`,
-    workSummary ? `Summary of changes: ${workSummary}.` : null,
+    workSummary ? `${workSummary}.` : (taskSummary ?? 'Completed.'),
     prUrl ? `PR: ${prUrl}` : null,
   ]
     .filter(Boolean)
@@ -59,6 +60,6 @@ export async function executeApprovedAction(db: AnyDb, approval: ApprovalRow, de
     date,
     minutes,
     jiraKey: taskKey,
-    note: 'Autonomous execution time (Jira worklog)',
+    note: 'Execution time (Jira worklog)',
   });
 }

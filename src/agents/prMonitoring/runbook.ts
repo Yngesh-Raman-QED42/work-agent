@@ -171,7 +171,7 @@ Report back: what you changed, and the test/lint/typecheck/build results.
 
   const committed = await deps.gitOps.commitAll(
     worktreePath,
-    `Address review feedback on ${pr.repo}#${pr.number}\n\n${outcome.summary}\n\nCo-Authored-By: Work Agent <work-agent@local>`,
+    `Address review feedback on ${pr.repo}#${pr.number}\n\n${outcome.summary}`,
   );
   if (!committed) {
     await approvals.file({

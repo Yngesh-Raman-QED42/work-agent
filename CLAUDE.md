@@ -32,6 +32,11 @@ command picks it up automatically, you don't have to invoke the screenshot mecha
 ```bash
 work-agent exec-finish <TICKET_KEY> --summary "<what you changed and why>"
 ```
+This `--summary` text goes verbatim into the PR description and the Jira comment — write it the
+way a person would describe their own change (what changed, why), never as a report about an AI
+having done it. No "I implemented this using...", no mentioning Claude/an agent/automation at
+all — it should read exactly like any other engineer's PR/commit summary.
+
 This alone does everything else, in order, automatically: independently re-runs
 tests/lint/typecheck/build (never trusts your own claim), checks the safety gate (diff ≤15
 files, no forbidden paths), captures the screenshot/GIF if you wrote the steps file, then
