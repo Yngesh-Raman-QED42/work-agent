@@ -9,6 +9,7 @@ function baseConfig(overrides: Partial<WorkAgentConfig['github']> = {}): WorkAge
     slack: { relevantChannels: [] },
     engineeringExecution: { openPrAsDraft: true },
     communication: { autoSendRoutine: false },
+    dashboard: { terminalOs: 'ubuntu' as const },
   };
 }
 

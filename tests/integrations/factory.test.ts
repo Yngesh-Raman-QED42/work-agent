@@ -15,6 +15,7 @@ function testConfig(): WorkAgentConfig {
     slack: { relevantChannels: [] },
     engineeringExecution: { openPrAsDraft: true },
     communication: { autoSendRoutine: false },
+    dashboard: { terminalOs: 'ubuntu' as const },
   };
 }
 

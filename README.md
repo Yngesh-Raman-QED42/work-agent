@@ -68,7 +68,7 @@ npm run cli approvals list             # full detail on each pending approval
 npm run cli approvals approve <id>     # or `reject`
 npm run cli end-of-day
 npm run cli weekly-summary
-npm run dashboard                      # http://localhost:4180, read-only
+npm run dashboard                      # http://localhost:4180 — read-only except the "Start" button below
 npm run scheduler                      # NOT started automatically — see below
 
 work-agent exec-start <TICKET_KEY>     # Engineering Execution, part 1 — see "Working a ticket" below
@@ -113,6 +113,22 @@ useful to have open in a second tab while a long run is in progress.
 `runExecution()` (the original single-call function, used by tests and the orchestrator when a
 real `ClaudeCodeRunner` is already available) is unchanged — it's just `startExecution()` →
 `claudeRunner.run()` → `finishExecution()` wired together internally, not a different code path.
+
+### The dashboard's "Start" button
+
+Every ticket card has a "▶ Start" button — it's the same thing as opening a terminal, `cd`-ing
+into this repo, and running `claude "work on task <KEY>"` by hand, just automated. This is
+different from (and not blocked by) the unattended-agent restriction above: it opens a real,
+interactive `claude` session in a real terminal window on your own machine — nothing runs headless.
+The dashboard is a local Node process, not a hosted web app, so the button's backend
+(`POST /start-task` in `server.ts`) has normal OS-level privileges to spawn that terminal directly.
+
+Which terminal-launch command it uses is a per-machine fact, set via `dashboard.terminalOs` in
+`work-agent.config.json` — `"ubuntu"` (default), `"mac"`, or `"windows"` (see
+`src/dashboard/launchSession.ts` for the exact command each one runs; Windows is best-effort,
+unverified against a real Windows machine). The button itself doesn't decide whether a ticket is
+actually eligible for autonomous work — it just starts the session; `exec-start`'s own policy check
+still has the final say once you ask it to work on the ticket.
 
 Tests (no Docker needed — pglite is in-memory):
 
@@ -232,6 +248,15 @@ example:
   ```json
   "engineeringExecution": {
     "openPrAsDraft": false
+  }
+  ```
+
+- **`dashboard.terminalOs`** *(default `"ubuntu"`)* — which terminal-launch command the
+  dashboard's "▶ Start" button uses (see "The dashboard's Start button" above). A per-machine
+  fact — set it to whatever you actually run this on.
+  ```json
+  "dashboard": {
+    "terminalOs": "mac"
   }
   ```
 

@@ -1,11 +1,13 @@
 import 'dotenv/config';
 import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
 import { getDb } from '../db/index.js';
 import { loadConfig } from '../config/index.js';
 import { buildConnectors } from '../integrations/factory.js';
 import { runPipeline } from '../pipeline/run.js';
 import { runSlackIntelligence } from '../agents/slackIntelligence/runbook.js';
 import { renderDashboard } from './render.js';
+import { buildLaunchCommand, isValidTicketKey } from './launchSession.js';
 
 const PORT = Number(process.env.DASHBOARD_PORT ?? 4180);
 // Real Jira/Slack/GitHub API calls happen on this cadence — deliberately
@@ -35,8 +37,35 @@ async function refresh(): Promise<void> {
   }
 }
 
+// The dashboard is a local Node process on your own machine, not a hosted
+// web app — this endpoint runs with normal OS-level privileges, so it can
+// open a real terminal directly. It is NOT the unattended/headless agent
+// path (that's blocked elsewhere by design): the button just automates
+// "open a terminal, cd here, run claude" — a real, interactive session,
+// identical to typing those commands by hand.
+const WORK_AGENT_DIR = process.cwd();
+
 const server = createServer(async (req, res) => {
-  if (req.url !== '/') {
+  const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
+
+  if (req.method === 'POST' && url.pathname === '/start-task') {
+    const key = url.searchParams.get('key') ?? '';
+    if (!isValidTicketKey(key)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: `not a valid ticket key: ${key}` }));
+      return;
+    }
+    try {
+      const { bin, args } = buildLaunchCommand(config.dashboard.terminalOs, WORK_AGENT_DIR, key);
+      const child = spawn(bin, args, { detached: true, stdio: 'ignore' });
+      child.unref(); // don't keep the dashboard process alive waiting on the terminal
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  if (url.pathname !== '/') {
     res.writeHead(404).end('not found');
     return;
   }

@@ -94,6 +94,13 @@ const ConfigSchema = z.object({
     // controls whether a *routine* draft can skip the approval queue.
     autoSendRoutine: z.boolean().default(false),
   }),
+  dashboard: z.object({
+    // Which terminal-launch command the dashboard's "Start" button uses
+    // (src/dashboard/launchSession.ts) — opens a real terminal on your own
+    // machine running a real, interactive `claude` session, exactly what
+    // you'd type by hand. Per-machine fact, not something to detect/guess.
+    terminalOs: z.enum(['ubuntu', 'mac', 'windows']).default('ubuntu'),
+  }),
 });
 
 export type WorkAgentConfig = z.infer<typeof ConfigSchema>;
@@ -107,6 +114,7 @@ const DEFAULT_CONFIG: WorkAgentConfig = {
   slack: { relevantChannels: [] },
   engineeringExecution: { openPrAsDraft: true },
   communication: { autoSendRoutine: false },
+  dashboard: { terminalOs: 'ubuntu' },
 };
 
 export function loadConfig(path = 'work-agent.config.json'): WorkAgentConfig {

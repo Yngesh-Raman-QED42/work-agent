@@ -33,6 +33,16 @@ function copyBtn(value: string): string {
   return `<button type="button" class="copy-btn" data-copy="${v}" title="Copy ${v}" aria-label="Copy ${v}">${COPY_ICON}</button>`;
 }
 
+/** POSTs to /start-task (see server.ts), which opens a real terminal on
+ * your own machine running a real, interactive `claude` session already
+ * primed with this ticket — exec-start's own eligibility check decides
+ * what actually happens next, this button is just the "open terminal, cd,
+ * type claude" step automated. */
+function startTaskBtn(key: string): string {
+  const k = escapeHtml(key);
+  return `<button type="button" class="start-task-btn" data-key="${k}" title="Open a terminal and start a Claude Code session on ${k}">▶ Start</button>`;
+}
+
 /** The one place a ticket/PR id is ever rendered — a link (when a URL is
  * known) plus a copy icon, always together, so "copy this id" works
  * identically everywhere it appears. */
@@ -173,6 +183,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     <span class="item-key">${keyLabel}</span>
     <span class="badge urgency-${item.urgency}">${escapeHtml(item.urgency)}</span>
     ${metaChips}
+    ${jira ? `<span class="item-top-spacer"></span>${startTaskBtn(jira.key)}` : ''}
   </div>
   <div class="item-title">${escapeHtml(heading)}</div>
   ${prLinks}
@@ -366,6 +377,14 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   .reasons { margin: 0.2rem 0 0; padding-left: 1.1rem; font-size: 0.78rem; color: var(--muted); }
 
   .item-top { display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.3rem; }
+  .item-top-spacer { flex: 1 1 auto; }
+  .start-task-btn {
+    font-family: var(--mono); font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+    background: var(--accent-wash); color: var(--accent-strong); border: 1px solid var(--accent);
+    border-radius: 6px; padding: 0.2rem 0.55rem; cursor: pointer;
+  }
+  .start-task-btn:hover { background: var(--accent); color: var(--surface); }
+  .start-task-btn:disabled { opacity: 0.6; cursor: default; background: var(--accent-wash); color: var(--accent-strong); }
   .item-key { font-family: var(--mono); font-size: 0.8rem; font-weight: 600; color: var(--muted); }
   .item-key a { color: var(--muted); }
   .chip { display: inline-block; font-size: 0.66rem; background: var(--surface); border: 1px solid var(--border); color: var(--muted); padding: 0.1rem 0.45rem; border-radius: 8px; white-space: nowrap; }
@@ -510,6 +529,42 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
         btn.classList.remove('copied');
       }, 1200);
     });
+  });
+
+  // "Start" button — opens a real terminal on this machine (see the
+  // /start-task handler in server.ts) running a real, interactive claude
+  // session already told to work on this ticket. Purely a convenience over
+  // typing the same commands by hand; exec-start's own eligibility check
+  // still decides what actually happens once that session starts.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.start-task-btn');
+    if (!btn) return;
+    var key = btn.getAttribute('data-key') || '';
+    var original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+    fetch('/start-task?key=' + encodeURIComponent(key), { method: 'POST' })
+      .then(function (r) {
+        return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+      })
+      .then(function (result) {
+        if (result.ok) {
+          btn.textContent = 'Started ✓';
+          setTimeout(function () {
+            btn.textContent = original;
+            btn.disabled = false;
+          }, 4000);
+        } else {
+          alert('Could not start a session: ' + (result.data && result.data.error ? result.data.error : 'unknown error'));
+          btn.textContent = original;
+          btn.disabled = false;
+        }
+      })
+      .catch(function (err) {
+        alert('Could not start a session: ' + err);
+        btn.textContent = original;
+        btn.disabled = false;
+      });
   });
 
   // Per-panel search — purely client-side, filters this panel's own

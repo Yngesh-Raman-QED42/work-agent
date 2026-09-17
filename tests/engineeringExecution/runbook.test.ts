@@ -54,6 +54,7 @@ function configWithRepo(previewRecipe: 'none' | 'explicit' | 'disabled' = 'none'
     slack: { relevantChannels: [] },
     engineeringExecution: { openPrAsDraft: true },
     communication: { autoSendRoutine: false },
+    dashboard: { terminalOs: 'ubuntu' as const },
   };
 }
 
@@ -812,6 +813,7 @@ describe('runExecution', () => {
       slack: { relevantChannels: [] },
       engineeringExecution: { openPrAsDraft: true },
       communication: { autoSendRoutine: false },
+      dashboard: { terminalOs: 'ubuntu' as const },
     };
     const result = await runExecution({
       db: handle.db,

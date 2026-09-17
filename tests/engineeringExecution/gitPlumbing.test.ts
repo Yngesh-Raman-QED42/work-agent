@@ -260,6 +260,7 @@ describe('git plumbing (real git, throwaway scratch repo, never touches any real
         slack: { relevantChannels: [] },
         engineeringExecution: { openPrAsDraft: true },
         communication: { autoSendRoutine: false },
+        dashboard: { terminalOs: 'ubuntu' as const },
       },
       task,
       repo: { projectKey: 'PROJ', owner: 'org', repo: 'repo', localPath: localRepo, defaultBranch: 'main' },

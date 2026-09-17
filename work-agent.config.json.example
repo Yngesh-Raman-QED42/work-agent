@@ -34,5 +34,8 @@
   },
   "engineeringExecution": {
     "openPrAsDraft": true
+  },
+  "dashboard": {
+    "terminalOs": "ubuntu"
   }
 }
