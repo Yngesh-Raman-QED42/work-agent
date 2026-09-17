@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createServer } from 'node:http';
+import { createServer, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import { getDb } from '../db/index.js';
 import { loadConfig } from '../config/index.js';
@@ -7,7 +7,7 @@ import { buildConnectors } from '../integrations/factory.js';
 import { runPipeline } from '../pipeline/run.js';
 import { runSlackIntelligence } from '../agents/slackIntelligence/runbook.js';
 import { renderDashboard } from './render.js';
-import { buildLaunchCommand, isValidTicketKey } from './launchSession.js';
+import { buildLaunchCommand, isValidTicketKey, type SessionAction } from './launchSession.js';
 
 const PORT = Number(process.env.DASHBOARD_PORT ?? 4180);
 // Real Jira/Slack/GitHub API calls happen on this cadence — deliberately
@@ -45,23 +45,36 @@ async function refresh(): Promise<void> {
 // identical to typing those commands by hand.
 const WORK_AGENT_DIR = process.cwd();
 
+function launchSessionForTicket(res: ServerResponse, url: URL, action: SessionAction): void {
+  const key = url.searchParams.get('key') ?? '';
+  if (!isValidTicketKey(key)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: `not a valid ticket key: ${key}` }));
+    return;
+  }
+  try {
+    const { bin, args } = buildLaunchCommand(config.dashboard.terminalOs, WORK_AGENT_DIR, key, action);
+    const child = spawn(bin, args, { detached: true, stdio: 'ignore' });
+    child.unref(); // don't keep the dashboard process alive waiting on the terminal
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true }));
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: String(err) }));
+  }
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
 
   if (req.method === 'POST' && url.pathname === '/start-task') {
-    const key = url.searchParams.get('key') ?? '';
-    if (!isValidTicketKey(key)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: `not a valid ticket key: ${key}` }));
-      return;
-    }
-    try {
-      const { bin, args } = buildLaunchCommand(config.dashboard.terminalOs, WORK_AGENT_DIR, key);
-      const child = spawn(bin, args, { detached: true, stdio: 'ignore' });
-      child.unref(); // don't keep the dashboard process alive waiting on the terminal
-      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: String(err) }));
-    }
+    launchSessionForTicket(res, url, 'work');
+    return;
+  }
+
+  // Read-only for now, by design — the estimate is just printed in the
+  // terminal (see launchSession.ts's prompt). No approval flow, no DB
+  // write, nothing on the dashboard reflects this yet; that's deliberately
+  // deferred until the estimation itself is proven good.
+  if (req.method === 'POST' && url.pathname === '/estimate-task') {
+    launchSessionForTicket(res, url, 'estimate');
     return;
   }
 

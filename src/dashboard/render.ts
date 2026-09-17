@@ -40,7 +40,15 @@ function copyBtn(value: string): string {
  * type claude" step automated. */
 function startTaskBtn(key: string): string {
   const k = escapeHtml(key);
-  return `<button type="button" class="start-task-btn" data-key="${k}" title="Open a terminal and start a Claude Code session on ${k}">▶ Start</button>`;
+  return `<button type="button" class="start-task-btn" data-key="${k}" data-action="work" title="Open a terminal and start a Claude Code session on ${k}">▶ Start</button>`;
+}
+
+/** POSTs to /estimate-task — read-only for now: the estimate is only
+ * printed in the opened terminal, nothing is written to Jira/the
+ * dashboard/anywhere else yet (deliberately deferred). */
+function estimateTaskBtn(key: string): string {
+  const k = escapeHtml(key);
+  return `<button type="button" class="start-task-btn estimate-task-btn" data-key="${k}" data-action="estimate" title="Open a terminal and ask Claude Code for a time estimate on ${k}">⏱ Estimate</button>`;
 }
 
 /** The one place a ticket/PR id is ever rendered — a link (when a URL is
@@ -183,7 +191,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     <span class="item-key">${keyLabel}</span>
     <span class="badge urgency-${item.urgency}">${escapeHtml(item.urgency)}</span>
     ${metaChips}
-    ${jira ? `<span class="item-top-spacer"></span>${startTaskBtn(jira.key)}` : ''}
+    ${jira ? `<span class="item-top-spacer"></span>${estimateTaskBtn(jira.key)}${startTaskBtn(jira.key)}` : ''}
   </div>
   <div class="item-title">${escapeHtml(heading)}</div>
   ${prLinks}
@@ -379,12 +387,16 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   .item-top { display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.3rem; }
   .item-top-spacer { flex: 1 1 auto; }
   .start-task-btn {
-    font-family: var(--mono); font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+    display: inline-flex; align-items: center; justify-content: center; gap: 0.3rem;
+    font-family: var(--mono); font-size: 0.72rem; font-weight: 600; line-height: 1.4; white-space: nowrap;
     background: var(--accent-wash); color: var(--accent-strong); border: 1px solid var(--accent);
-    border-radius: 6px; padding: 0.2rem 0.55rem; cursor: pointer;
+    border-radius: 6px; padding: 0.2rem 0.55rem; height: 1.9rem; cursor: pointer; vertical-align: middle;
   }
   .start-task-btn:hover { background: var(--accent); color: var(--surface); }
   .start-task-btn:disabled { opacity: 0.6; cursor: default; background: var(--accent-wash); color: var(--accent-strong); }
+  .estimate-task-btn { background: var(--surface); color: var(--muted); border-color: var(--border); }
+  .estimate-task-btn:hover { background: var(--surface-2); color: var(--text); }
+  .estimate-task-btn:disabled { background: var(--surface); color: var(--muted); }
   .item-key { font-family: var(--mono); font-size: 0.8rem; font-weight: 600; color: var(--muted); }
   .item-key a { color: var(--muted); }
   .chip { display: inline-block; font-size: 0.66rem; background: var(--surface); border: 1px solid var(--border); color: var(--muted); padding: 0.1rem 0.45rem; border-radius: 8px; white-space: nowrap; }
@@ -531,37 +543,40 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     });
   });
 
-  // "Start" button — opens a real terminal on this machine (see the
-  // /start-task handler in server.ts) running a real, interactive claude
-  // session already told to work on this ticket. Purely a convenience over
-  // typing the same commands by hand; exec-start's own eligibility check
-  // still decides what actually happens once that session starts.
+  // "Start"/"Estimate" buttons — both open a real terminal on this machine
+  // (see /start-task and /estimate-task in server.ts) running a real,
+  // interactive claude session already told what to do with this ticket.
+  // Purely a convenience over typing the same commands by hand; whatever
+  // that session actually does next is entirely up to it (and, for "Start",
+  // exec-start's own eligibility check) — this just opens the terminal.
   document.addEventListener('click', function (e) {
     var btn = e.target.closest('.start-task-btn');
     if (!btn) return;
     var key = btn.getAttribute('data-key') || '';
+    var action = btn.getAttribute('data-action') || 'work';
+    var endpoint = action === 'estimate' ? '/estimate-task' : '/start-task';
     var original = btn.textContent;
     btn.disabled = true;
-    btn.textContent = 'Starting…';
-    fetch('/start-task?key=' + encodeURIComponent(key), { method: 'POST' })
+    btn.textContent = action === 'estimate' ? 'Opening…' : 'Starting…';
+    fetch(endpoint + '?key=' + encodeURIComponent(key), { method: 'POST' })
       .then(function (r) {
         return r.json().then(function (data) { return { ok: r.ok, data: data }; });
       })
       .then(function (result) {
         if (result.ok) {
-          btn.textContent = 'Started ✓';
+          btn.textContent = action === 'estimate' ? 'Opened ✓' : 'Started ✓';
           setTimeout(function () {
             btn.textContent = original;
             btn.disabled = false;
           }, 4000);
         } else {
-          alert('Could not start a session: ' + (result.data && result.data.error ? result.data.error : 'unknown error'));
+          alert('Could not open a session: ' + (result.data && result.data.error ? result.data.error : 'unknown error'));
           btn.textContent = original;
           btn.disabled = false;
         }
       })
       .catch(function (err) {
-        alert('Could not start a session: ' + err);
+        alert('Could not open a session: ' + err);
         btn.textContent = original;
         btn.disabled = false;
       });

@@ -52,4 +52,31 @@ describe('buildLaunchCommand', () => {
     expect(() => buildLaunchCommand('mac', '/x', "'; rm -rf ~; '")).toThrow(/malformed/);
     expect(() => buildLaunchCommand('windows', '/x', '')).toThrow(/malformed/);
   });
+
+  it('defaults to the "work" action when none is given', () => {
+    const withDefault = buildLaunchCommand('ubuntu', '/x', 'PROJ-1');
+    const withExplicit = buildLaunchCommand('ubuntu', '/x', 'PROJ-1', 'work');
+    expect(withDefault).toEqual(withExplicit);
+  });
+
+  it('"estimate" action asks for a read-only estimate, never an implementation', () => {
+    const { args } = buildLaunchCommand('ubuntu', '/x', 'PROJ-1', 'estimate');
+    const inner = args.join(' ');
+    expect(inner).toContain('estimate task PROJ-1');
+    expect(inner).toContain('read-only');
+    expect(inner).toMatch(/do not write any code, create a branch, open a PR/);
+    expect(inner).toContain('generous buffer');
+  });
+
+  it('"estimate" action asks for an AI-assisted estimate, not manual human-coding time', () => {
+    const { args } = buildLaunchCommand('ubuntu', '/x', 'PROJ-1', 'estimate');
+    const inner = args.join(' ');
+    expect(inner).toMatch(/AI-assisted/);
+    expect(inner).toMatch(/not manual line-by-line human coding/);
+    expect(inner).toContain('exec-start/exec-finish');
+  });
+
+  it('"estimate" action still validates the ticket key before building anything', () => {
+    expect(() => buildLaunchCommand('ubuntu', '/x', 'not a key', 'estimate')).toThrow(/malformed/);
+  });
 });

@@ -2,8 +2,8 @@
 
 This is an autonomous work-orchestration system (Jira/Slack/GitHub → dashboard → gated
 autonomous execution). Full detail: `README.md` and `docs/architecture.html`. This file is the
-one thing you need to read before doing anything when the user says **"work on ticket \<KEY>"**
-or similar.
+one thing you need to read before doing anything when the user says **"work on ticket \<KEY>"**,
+**"estimate task \<KEY>"**, or similar.
 
 ## If asked to work on a ticket: run the real commands, don't freelance it
 
@@ -45,6 +45,39 @@ half-done or trying to patch around it.
 
 If either command errors or behaves unexpectedly, **stop and tell the user** what it actually
 said — don't work around it by doing the step manually instead.
+
+## If asked to estimate a ticket: read deeply, stay read-only
+
+When asked to **estimate task \<KEY>** (a distinct, separate request from "work on" — triggered by
+the dashboard's "⏱ Estimate" button, or asked directly), this is investigation only. Never write
+code, never create a branch or worktree, never open a PR, never log time or post a comment
+anywhere. Just read, reason, and report back in this session's own output — nothing about an
+estimate is written to Jira, the dashboard's database, or GitHub yet (deliberately deferred until
+the estimation approach itself is proven good).
+
+1. Fetch the full ticket — summary, description, every comment, and its current status.
+2. Follow every link: sub-tasks, "relates to"/"blocks"/"is blocked by" issues, and the epic it
+   belongs to if any. Read enough of each to understand what this ticket actually depends on, not
+   just its own title.
+3. Look at the real codebase (the repo mapped in `work-agent.config.json` for this ticket's
+   project) to judge actual complexity — how many files/systems are likely touched, whether it
+   needs a new external service/API integration, a schema migration, a new dependency, or an
+   unfamiliar area of the code. Don't estimate blind from the title alone.
+4. **Calibrate development time to how this will actually be implemented: AI-assisted (this
+   system's own `exec-start`/`exec-finish` flow), not manual line-by-line human coding.** An AI
+   implementation of a well-scoped change is typically much faster than a human writing it by
+   hand — but real wall-clock time still goes into: the AI iterating if checks/the gate fail,
+   further rounds if the fix isn't right the first time, and a human actually reading and
+   reviewing the diff before it merges. Don't estimate this as if you were the one hand-typing the
+   code over hours or days; don't estimate it as instantaneous either.
+5. Give one estimate that covers the *whole* lifecycle, each part called out separately:
+   AI-assisted development (plus iteration), your review, QA, and deployment — then a total.
+6. Add a buffer on top of your honest number, and lean generous. **A bad estimate is worse than a
+   late completion.** State the buffer as its own line, and say briefly what's driving it (an
+   unclear dependency, no existing test coverage in that area, an area you're less confident
+   about, etc.).
+7. Report it directly in this session — a short breakdown, a total, and the 2-3 biggest sources of
+   uncertainty behind the buffer. That's the whole deliverable for now.
 
 ## Hard constraints — never, regardless of what the ticket asks for
 
