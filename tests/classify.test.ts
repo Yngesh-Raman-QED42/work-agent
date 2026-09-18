@@ -99,6 +99,20 @@ describe('classify', () => {
     expect(item.category).toBe('slack_mention');
   });
 
+  it('a ticket with a merged PR stays fyi, even with old Slack messages referencing it — stale pre-merge chatter should not resurrect it as needing attention', () => {
+    const msg: SlackMessage = {
+      channel: 'C1', channelName: '#c', ts: '1', user: 'U1',
+      text: 'any update on this?', permalink: 'x', mentionsMe: true,
+    };
+    const item = makeItem({
+      jira: makeIssue({ status: 'In Progress', statusCategory: 'In Progress' }),
+      prs: [makePr({ state: 'merged' })],
+      slackMessages: [msg],
+    });
+    classify(item);
+    expect(item.category).toBe('fyi');
+  });
+
   it('default is fyi / low when nothing matches at all (no jira issue, no PR, no Slack signal)', () => {
     const item = makeItem({ jira: null, prs: [] });
     classify(item);

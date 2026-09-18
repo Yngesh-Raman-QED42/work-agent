@@ -56,7 +56,12 @@ export function classify(item: WorkItem): WorkItem {
     }
   }
 
-  if (item.slackMessages.length > 0 && category === 'fyi') {
+  // A merged PR means the ticket is effectively done from your side — a
+  // Slack message asking about progress from before it merged is stale
+  // context now, not a live reason to surface this as needing attention.
+  // ("Recently merged" already gives the merge itself its own visibility.)
+  const hasMergedPr = item.prs.some((pr) => pr.state === 'merged');
+  if (item.slackMessages.length > 0 && category === 'fyi' && !hasMergedPr) {
     category = 'slack_mention';
     reasons.push(`${item.slackMessages.length} Slack message(s) reference this`);
   }
