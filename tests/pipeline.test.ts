@@ -1,4 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { createTestDb, type TestDbHandle } from '../src/test-utils/db.js';
 import { runPipeline } from '../src/pipeline/run.js';
 import { MockSlackConnector } from '../src/integrations/slack/mock.js';
@@ -148,6 +149,76 @@ describe('runPipeline (end to end, mocked connectors)', () => {
 
     const rows = await handle.db.select().from(executionTasks);
     expect(rows.map((r) => r.id)).toEqual(['QED42OPSIN-56']);
+  });
+
+  it('marks a "monitoring" execution task as "done" once its PR merges, instead of dropping it or leaving it stuck as "monitoring"', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(executionTasks).values({
+      id: 'QED42OPSIN-60',
+      repo: 'qed42/operational-intelligence',
+      branch: 'work-agent/qed42opsin-60',
+      status: 'monitoring',
+      prUrl: 'https://github.com/qed42/operational-intelligence/pull/999',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const prsWithMerge = [
+      ...defaultFixturePrs(),
+      {
+        repo: 'qed42/operational-intelligence',
+        number: 999,
+        title: 'QED42OPSIN-60: fix the thing',
+        url: 'https://github.com/qed42/operational-intelligence/pull/999',
+        state: 'merged' as const,
+        isDraft: false,
+        branch: 'work-agent/qed42opsin-60',
+        isAuthor: true,
+        reviewRequestedOfMe: false,
+        reviewState: 'none' as const,
+        updatedAt: '2026-09-09T09:00:00+05:30',
+        closedAt: '2026-09-09T09:00:00+05:30',
+      },
+    ];
+    await runPipeline(
+      handle.db,
+      { slack: mockConnectors().slack, jira: mockConnectors().jira, github: new MockGitHubConnector(prsWithMerge) },
+      { runDate: '2026-09-09' },
+    );
+
+    const rows = await handle.db.select().from(executionTasks).where(eq(executionTasks.id, 'QED42OPSIN-60'));
+    expect(rows[0]!.status).toBe('done');
+  });
+
+  it('a ticket with a merged PR is no longer flagged "in progress with no linked PR" — the merged PR itself still counts as linked', async () => {
+    handle = await createTestDb();
+    const prsWithMerge = [
+      {
+        repo: 'qed42/operational-intelligence',
+        number: 300,
+        title: 'QED42OPSIN-59: fix capacity planner search ranking',
+        url: 'https://github.com/qed42/operational-intelligence/pull/300',
+        state: 'merged' as const,
+        isDraft: false,
+        branch: 'work-agent/qed42opsin-59',
+        isAuthor: true,
+        reviewRequestedOfMe: false,
+        reviewState: 'none' as const,
+        updatedAt: '2026-09-09T09:00:00+05:30',
+        closedAt: '2026-09-09T09:00:00+05:30',
+      },
+    ];
+    const result = await runPipeline(
+      handle.db,
+      { slack: mockConnectors().slack, jira: mockConnectors().jira, github: new MockGitHubConnector(prsWithMerge) },
+      { runDate: '2026-09-09' },
+    );
+
+    const item = result.items.find((i) => i.id === 'QED42OPSIN-59')!;
+    expect(item.reasons).not.toContain('QED42OPSIN-59 is in progress with no linked PR yet');
+    expect(item.prs.some((p) => p.state === 'merged')).toBe(true);
+    expect(result.approvalQueue.some((a) => a.id === 'start-pr:QED42OPSIN-59')).toBe(false);
   });
 
   it('ignores nothing by default — an unrelated key in the list has no effect', async () => {

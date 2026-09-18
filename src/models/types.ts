@@ -75,6 +75,10 @@ export interface GitHubPr {
   reviewRequestedOfMe: boolean;
   reviewState: 'none' | 'changes_requested' | 'approved' | 'commented';
   updatedAt: string;
+  // Only present for 'merged'/'closed' — when it stopped being open. Drives
+  // the dashboard's "Recently merged" section and how far back
+  // LiveGitHubConnector bothers fetching merged PRs at all.
+  closedAt?: string;
 }
 
 export function prJiraKeys(pr: GitHubPr): string[] {

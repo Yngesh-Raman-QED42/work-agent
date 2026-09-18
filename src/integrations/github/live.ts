@@ -5,6 +5,13 @@ import type { GitHubConnector } from '../types.js';
 
 const execFileAsync = promisify(execFile);
 
+// Bounds how far back a merged PR is still fetched at all — generous
+// relative to the dashboard's own 7-day "Recently merged" display window
+// (see render.ts), so a pipeline run that's fallen behind by a few days
+// still has the data once it catches up, without "merged" meaning
+// "matches an author search, ever."
+const MERGED_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
+
 /**
  * Read-only, via the `gh` CLI rather than a raw REST+token client.
  *
@@ -67,7 +74,7 @@ export class LiveGitHubConnector implements GitHubConnector {
       'prs',
       query,
       '--json',
-      'repository,number,title,url,state,isDraft,updatedAt',
+      'repository,number,title,url,state,isDraft,updatedAt,closedAt',
       '--limit',
       '50',
     ]);
@@ -79,26 +86,41 @@ export class LiveGitHubConnector implements GitHubConnector {
       state: string;
       isDraft: boolean;
       updatedAt: string;
+      closedAt: string | null;
     }>;
 
-    const open = items.filter((item) => item.state.toLowerCase() === 'open');
+    // Open PRs always kept. Merged PRs kept too — but only recently merged
+    // ones (see MERGED_LOOKBACK_MS): without this, "merged" would mean
+    // "matches an author search, ever," which grows unbounded over the
+    // life of the project. A plain "closed" (declined without merging) is
+    // dropped entirely; there's nothing actionable left to track once
+    // that's happened and it isn't "recently merged" either.
+    const relevant = items.filter((item) => {
+      const state = item.state.toLowerCase();
+      if (state === 'open') return true;
+      if (state === 'merged' && item.closedAt) {
+        return Date.now() - new Date(item.closedAt).getTime() <= MERGED_LOOKBACK_MS;
+      }
+      return false;
+    });
 
     // Fetch the branch name with one follow-up `gh pr view` call per result
     // (only for the ones we're keeping) — `gh search prs --json` doesn't
     // support `headRefName` at all; only `gh pr view`/`gh pr list` do.
     return Promise.all(
-      open.map(async (item) => ({
+      relevant.map(async (item) => ({
         repo: item.repository.nameWithOwner,
         number: item.number,
         title: item.title,
         url: item.url,
-        state: 'open' as const,
+        state: item.state.toLowerCase() as 'open' | 'merged',
         isDraft: item.isDraft,
         branch: await this.fetchBranch(item.repository.nameWithOwner, item.number),
         isAuthor: false,
         reviewRequestedOfMe: false,
         reviewState: 'none' as const,
         updatedAt: item.updatedAt,
+        closedAt: item.closedAt ?? undefined,
       })),
     );
   }

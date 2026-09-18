@@ -14,22 +14,35 @@ import type { GitHubPr, WorkItem } from '../models/types.js';
 /**
  * Engineering Execution's own DB row for a ticket ("monitoring": a PR is
  * open, still being watched) is never touched again by anything else —
- * unlike work_items, it isn't fully replaced each run. If that PR gets
- * closed outside this system (a human closes it, or it's been discarded
- * and redone, as happened repeatedly during testing), the row just sits
- * there forever claiming a PR is still in review that no longer exists.
- * `fetchMyPullRequests` only ever returns OPEN PRs, so "not in this list"
- * reliably means "no longer open" — safe to drop.
+ * unlike work_items, it isn't fully replaced each run. `fetchMyPullRequests`
+ * now returns recently-merged PRs too (not just open ones — see
+ * LiveGitHubConnector), so a monitoring row whose PR has merged gets marked
+ * "done" instead of silently claiming to still be in review forever. A row
+ * whose PR isn't in the fetch at all (closed without merging, deleted, or
+ * simply fell out of the merged-PR lookback window) gets dropped — there's
+ * nothing left to say about it.
  */
-async function reconcileExecutionTasks(db: AnyDb, prs: GitHubPr[]): Promise<number> {
-  const openUrls = new Set(prs.map((p) => p.url));
+async function reconcileExecutionTasks(db: AnyDb, prs: GitHubPr[]): Promise<{ removed: number; markedDone: number }> {
+  const byUrl = new Map(prs.map((p) => [p.url, p]));
   const monitoring = await db
     .select({ id: executionTasks.id, prUrl: executionTasks.prUrl })
     .from(executionTasks)
     .where(eq(executionTasks.status, 'monitoring'));
-  const staleIds = monitoring.filter((t) => t.prUrl && !openUrls.has(t.prUrl)).map((t) => t.id);
-  if (staleIds.length > 0) await db.delete(executionTasks).where(inArray(executionTasks.id, staleIds));
-  return staleIds.length;
+
+  const toRemove: string[] = [];
+  const toMarkDone: string[] = [];
+  for (const t of monitoring) {
+    if (!t.prUrl) continue;
+    const match = byUrl.get(t.prUrl);
+    if (!match) toRemove.push(t.id);
+    else if (match.state === 'merged') toMarkDone.push(t.id);
+  }
+
+  if (toRemove.length > 0) await db.delete(executionTasks).where(inArray(executionTasks.id, toRemove));
+  if (toMarkDone.length > 0) {
+    await db.update(executionTasks).set({ status: 'done', updatedAt: new Date() }).where(inArray(executionTasks.id, toMarkDone));
+  }
+  return { removed: toRemove.length, markedDone: toMarkDone.length };
 }
 
 export interface PipelineResult {
@@ -70,8 +83,8 @@ export async function runPipeline(
   const prs = await connectors.github.fetchMyPullRequests();
   await audit.log('collected_github', { count: prs.length });
 
-  const staleExecutionTasks = await reconcileExecutionTasks(db, prs);
-  if (staleExecutionTasks > 0) await audit.log('execution_tasks_reconciled', { removed: staleExecutionTasks });
+  const execReconcile = await reconcileExecutionTasks(db, prs);
+  if (execReconcile.removed > 0 || execReconcile.markedDone > 0) await audit.log('execution_tasks_reconciled', execReconcile);
 
   let items = correlate(issues, prs, messages);
   await audit.log('correlated', { work_item_count: items.length });
