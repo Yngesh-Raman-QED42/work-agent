@@ -145,7 +145,11 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
 
   it('a Jira status-transition failure at start never stops the worktree that already exists', async () => {
     handle = await createTestDb();
-    const failingUpdater = { transitionToStatus: () => Promise.reject(new Error('Jira is down')), addComment: () => Promise.resolve() };
+    const failingUpdater = {
+      transitionToStatus: () => Promise.reject(new Error('Jira is down')),
+      addComment: () => Promise.resolve(),
+      updateDescription: () => Promise.resolve(),
+    };
     const started = await startExecution({
       db: handle.db,
       config: configWithRepo(),
@@ -194,6 +198,7 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
     const failingUpdater = {
       addComment: () => Promise.reject(new Error('Jira is down')),
       transitionToStatus: () => Promise.reject(new Error('Jira is down')),
+      updateDescription: () => Promise.resolve(),
     };
     const started = await startExecution({
       db: handle.db,

@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createServer, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import { getDb } from '../db/index.js';
 import { loadConfig } from '../config/index.js';
@@ -8,6 +8,10 @@ import { runPipeline } from '../pipeline/run.js';
 import { runSlackIntelligence } from '../agents/slackIntelligence/runbook.js';
 import { renderDashboard } from './render.js';
 import { buildLaunchCommand, isValidTicketKey, type SessionAction } from './launchSession.js';
+import { LiveJiraFullDetailReader } from '../integrations/jira/issueFullDetail.js';
+import { LiveJiraIssueUpdater } from '../integrations/jira/issueUpdater.js';
+import { LiveJiraWorklogWriter } from '../integrations/jira/worklogWriter.js';
+import { logTime } from '../agents/workLog/timeEntry.js';
 
 const PORT = Number(process.env.DASHBOARD_PORT ?? 4180);
 // Real Jira/Slack/GitHub API calls happen on this cadence — deliberately
@@ -61,6 +65,145 @@ function launchSessionForTicket(res: ServerResponse, url: URL, action: SessionAc
   }
 }
 
+function sendJson(res: ServerResponse, status: number, data: unknown): void {
+  res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(data));
+}
+
+const MAX_BODY_BYTES = 512 * 1024; // generous for a comment/description edit; not for a file upload
+
+function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        reject(new Error('request body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (chunks.length === 0) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+      } catch {
+        reject(new Error('invalid JSON body'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Everything below writes directly to Jira the moment the request lands —
+ * no approval queue in between. That's deliberate, the same reasoning as
+ * `log-time --jira` in cli.ts: a person clicking "Log time"/"Add
+ * comment"/"Save" in their own dashboard, about their own ticket, IS the
+ * approval — there's no one else in the loop to ask. What never happens
+ * regardless: nothing here can merge a PR, deploy anything, or send a
+ * Slack message — those guardrails live entirely outside this file and
+ * aren't touched by adding these routes.
+ */
+async function handleTicketDetail(res: ServerResponse, url: URL): Promise<void> {
+  const key = url.searchParams.get('key') ?? '';
+  if (!isValidTicketKey(key)) return sendJson(res, 400, { error: `not a valid ticket key: ${key}` });
+  try {
+    const detail = await new LiveJiraFullDetailReader().fetchFullDetail(key);
+    sendJson(res, 200, detail);
+  } catch (err) {
+    sendJson(res, 502, { error: String(err) });
+  }
+}
+
+async function handleJiraAttachment(res: ServerResponse, url: URL): Promise<void> {
+  const id = url.searchParams.get('id') ?? '';
+  if (!/^\d+$/.test(id)) return sendJson(res, 400, { error: 'not a valid attachment id' });
+  const baseUrl = (process.env.JIRA_BASE_URL ?? '').replace(/\/$/, '');
+  const email = process.env.JIRA_EMAIL ?? '';
+  const apiToken = process.env.JIRA_API_TOKEN ?? '';
+  if (!baseUrl || !email || !apiToken) return sendJson(res, 400, { error: 'Jira is not configured (JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)' });
+
+  try {
+    const authHeader = 'Basic ' + Buffer.from(`${email}:${apiToken}`).toString('base64');
+    const upstream = await fetch(`${baseUrl}/rest/api/3/attachment/content/${id}`, {
+      headers: { Authorization: authHeader },
+      redirect: 'follow',
+    });
+    if (!upstream.ok || !upstream.body) {
+      res.writeHead(upstream.status || 502).end(`attachment fetch failed: ${upstream.status}`);
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+      'Content-Disposition': upstream.headers.get('content-disposition') ?? 'attachment',
+    });
+    // Node's http response isn't a WHATWG WritableStream, so the upstream
+    // web ReadableStream (from fetch) is drained by hand rather than piped.
+    const reader = upstream.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+    res.end();
+  } catch (err) {
+    res.writeHead(502).end(String(err));
+  }
+}
+
+async function handleTicketLogTime(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const key = url.searchParams.get('key') ?? '';
+  if (!isValidTicketKey(key)) return sendJson(res, 400, { error: `not a valid ticket key: ${key}` });
+  try {
+    const body = await readJsonBody(req);
+    const minutes = Number(body.minutes);
+    const comment = typeof body.comment === 'string' ? body.comment : undefined;
+    if (!Number.isFinite(minutes) || minutes <= 0) return sendJson(res, 400, { error: 'minutes must be a positive number' });
+
+    const date = new Date().toISOString().slice(0, 10);
+    await new LiveJiraWorklogWriter().logWork(key, minutes, { comment, date });
+    // Mirrors the local bookkeeping the CLI's own `log-time --jira` path
+    // keeps — so this shows up in the dashboard's own "Today" panel too,
+    // not just on the Jira issue.
+    await logTime(db, { date, minutes, jiraKey: key, note: comment });
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    sendJson(res, 502, { error: String(err) });
+  }
+}
+
+async function handleTicketComment(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const key = url.searchParams.get('key') ?? '';
+  if (!isValidTicketKey(key)) return sendJson(res, 400, { error: `not a valid ticket key: ${key}` });
+  try {
+    const body = await readJsonBody(req);
+    const text = typeof body.text === 'string' ? body.text.trim() : '';
+    if (!text) return sendJson(res, 400, { error: 'comment text is required' });
+    await new LiveJiraIssueUpdater().addComment(key, text);
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    sendJson(res, 502, { error: String(err) });
+  }
+}
+
+async function handleTicketDescription(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const key = url.searchParams.get('key') ?? '';
+  if (!isValidTicketKey(key)) return sendJson(res, 400, { error: `not a valid ticket key: ${key}` });
+  try {
+    const body = await readJsonBody(req);
+    const text = typeof body.text === 'string' ? body.text : '';
+    await new LiveJiraIssueUpdater().updateDescription(key, text);
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    sendJson(res, 502, { error: String(err) });
+  }
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
 
@@ -75,6 +218,27 @@ const server = createServer(async (req, res) => {
   // deferred until the estimation itself is proven good.
   if (req.method === 'POST' && url.pathname === '/estimate-task') {
     launchSessionForTicket(res, url, 'estimate');
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/ticket-detail') {
+    await handleTicketDetail(res, url);
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/jira-attachment') {
+    await handleJiraAttachment(res, url);
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/ticket-log-time') {
+    await handleTicketLogTime(req, res, url);
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/ticket-comment') {
+    await handleTicketComment(req, res, url);
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/ticket-description') {
+    await handleTicketDescription(req, res, url);
     return;
   }
 

@@ -3,7 +3,7 @@
 // the same spirit as worklogWriter.ts — used only from Engineering
 // Execution's own start/finish steps, never from anything read-only.
 
-import { textWithLinksToAdf } from './adf.js';
+import { textWithLinksToAdf, plainTextToAdf } from './adf.js';
 
 export interface JiraTransition {
   id: string;
@@ -28,6 +28,17 @@ export interface JiraIssueUpdater {
    * never forces a transition that doesn't exist.
    */
   transitionToStatus(key: string, candidateStatusNames: string[]): Promise<string | null>;
+  /**
+   * Replaces the issue's description outright with plain text — a
+   * deliberately lossy write. The dashboard's ticket-detail dialog is the
+   * only caller: it pre-fills its edit box from the plain-text flatten of
+   * the current (possibly richly-formatted) ADF description, so anyone
+   * using it already sees, and accepts, that saving drops formatting. A
+   * real rich-text round trip is out of scope here — this exists so a
+   * quick "fix a typo" or "add one more line" edit doesn't require opening
+   * Jira at all, not to replace Jira's own editor for anything elaborate.
+   */
+  updateDescription(key: string, text: string): Promise<void>;
 }
 
 export class LiveJiraIssueUpdater implements JiraIssueUpdater {
@@ -83,11 +94,22 @@ export class LiveJiraIssueUpdater implements JiraIssueUpdater {
     if (!doResp.ok) throw new Error(`Jira transition failed for ${key}: ${doResp.status} ${await doResp.text()}`);
     return match.to.name;
   }
+
+  async updateDescription(key: string, text: string): Promise<void> {
+    const url = `${this.baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}`;
+    const resp = await fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: this.authHeader(), Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: { description: plainTextToAdf(text) } }),
+    });
+    if (!resp.ok) throw new Error(`Jira description write failed for ${key}: ${resp.status} ${await resp.text()}`);
+  }
 }
 
 export class MockJiraIssueUpdater implements JiraIssueUpdater {
   comments: Array<{ key: string; text: string; links: Array<{ label: string; url: string }> }> = [];
   transitionAttempts: Array<{ key: string; candidates: string[] }> = [];
+  descriptionUpdates: Array<{ key: string; text: string }> = [];
 
   /** key -> the one status name this fake issue's workflow will report as
    * available right now, or undefined if it should offer none (matching a
@@ -104,5 +126,9 @@ export class MockJiraIssueUpdater implements JiraIssueUpdater {
     if (!available) return null;
     const matched = candidateStatusNames.find((c) => c.toLowerCase() === available.toLowerCase());
     return matched ? available : null;
+  }
+
+  async updateDescription(key: string, text: string): Promise<void> {
+    this.descriptionUpdates.push({ key, text });
   }
 }
