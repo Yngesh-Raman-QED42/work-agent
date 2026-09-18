@@ -506,9 +506,27 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   /* Ticket detail dialog — a native <dialog>, populated client-side from
      GET /ticket-detail. Kept in the same stylesheet as everything else;
      no separate component library for one modal. */
-  #ticket-dialog { border: none; border-radius: 14px; padding: 0; width: min(760px, 92vw); max-height: 88vh; background: var(--surface); color: var(--text); }
+  #ticket-dialog {
+    border: 1px solid var(--border); outline: none; border-radius: 14px; padding: 0;
+    width: min(760px, 92vw); max-height: 88vh; overflow: hidden;
+    background: var(--surface); color: var(--text);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  }
   #ticket-dialog::backdrop { background: rgba(10, 16, 17, 0.55); }
-  #ticket-dialog-body { padding: 1.3rem 1.5rem 1.6rem; overflow-y: auto; max-height: 88vh; }
+  #ticket-dialog-body {
+    padding: 1.3rem 1.5rem 1.6rem; overflow-y: auto; max-height: 88vh;
+    scrollbar-color: var(--border) var(--surface); scrollbar-width: thin;
+  }
+  /* Firefox picks up scrollbar-color above; Chrome/Safari/Edge need the
+     ::-webkit-scrollbar-* pseudo-elements instead — themed to match the
+     page rather than each browser's default light-grey scrollbar, which
+     stood out sharply against a dark surface. Applied globally (not just
+     the dialog) so the main page's own scrollbar blends too. */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--faint); }
+  html { scrollbar-color: var(--border) var(--bg); scrollbar-width: thin; }
   .dlg-loading, .dlg-error { padding: 2rem 0; text-align: center; color: var(--muted); }
   .dlg-error { color: var(--high); }
   .dlg-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 0.9rem; }
