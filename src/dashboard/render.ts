@@ -159,15 +159,38 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     if (jira?.key && jira.url) jiraUrlByKey.set(jira.key, jira.url);
   }
 
+  // Once a PR merges, the ticket drops out of every "needs action" bucket —
+  // correct, but with nothing else claiming it, it lands in "fyi," which
+  // duplicates "Recently merged" below for no reason: same ticket, same
+  // "nothing left to do" signal, shown twice. Computed here (rather than
+  // where "Recently merged" itself is built, further down) specifically so
+  // it can also gate what "Active work items"/approval cards show — a
+  // ticket in here has nothing to "start" (already done) or "estimate"
+  // (already implemented). If it later needs real work again (QA rejects
+  // it, a bug reopens it), that'll surface as a fresh, non-fyi category —
+  // a real reason, not stale merge history — and it reappears normally
+  // with its own CTAs.
+  const mergedKeys = new Set(
+    items
+      .filter((item) => item.category === 'fyi')
+      .filter((item) =>
+        (item.prs as GitHubPr[]).some(
+          (pr) => pr.state === 'merged' && pr.closedAt && Date.now() - new Date(pr.closedAt).getTime() <= MERGED_DISPLAY_WINDOW_MS,
+        ),
+      )
+      .map((item) => item.id),
+  );
+  const displayItems = items.filter((item) => !mergedKeys.has(item.id));
+
   const byCategory = new Map<string, typeof items>();
-  for (const item of items) {
+  for (const item of displayItems) {
     const list = byCategory.get(item.category) ?? [];
     list.push(item);
     byCategory.set(item.category, list);
   }
 
   const urgencyRank: Record<string, number> = { high: 0, medium: 1, low: 2 };
-  const highUrgencyCount = items.filter((i) => i.urgency === 'high').length;
+  const highUrgencyCount = displayItems.filter((i) => i.urgency === 'high').length;
   const activeTaskCount = tasks.filter((t) => ACTIVE_TASK_STATUSES.has(t.status)).length;
   const conversations = summarizeConversations(signals);
   const flaggedConvoCount = conversations.filter((c) => c.topCategory !== 'irrelevant' && c.topCategory !== 'informational').length;
@@ -252,7 +275,11 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
                 return `<div class="pr-link">Merged ${escapeHtml(mergedAgo)}: ${idChip(`${pr.repo}#${pr.number}`, pr.url)} — ${escapeHtml(pr.title)}</div>`;
               })
               .join('');
-            return `<div class="card compact">
+            // These tickets no longer show in "Active work items" (see
+            // mergedKeys above) — clicking through to the full detail
+            // dialog still works from here, it's just no longer duplicated
+            // as a separate row elsewhere.
+            return `<div class="card compact"${jira ? ` data-ticket-key="${escapeHtml(jira.key)}"` : ''}>
   <div class="item-title">${keyLabel}</div>
   <div class="item-summary">${escapeHtml(heading)}</div>
   ${prLines}
@@ -268,8 +295,11 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
             // Only meaningful when the target actually is a ticket key —
             // an approval like "review this pull request" targets
             // "repo#123", not a Jira key, and Start/Estimate wouldn't mean
-            // anything there.
-            const actionBtns = isValidTicketKey(a.target) ? `${estimateTaskBtn(a.target)}${startTaskBtn(a.target)}` : '';
+            // anything there. Also suppressed for a ticket that's already
+            // merged (e.g. the log_execution_time approval that shows up
+            // right after finishing it) — nothing left to start or estimate.
+            const actionBtns =
+              isValidTicketKey(a.target) && !mergedKeys.has(a.target) ? `${estimateTaskBtn(a.target)}${startTaskBtn(a.target)}` : '';
             return `<div class="card risk-${a.riskLevel}">
     <div class="approval-head"><span class="badge source">${escapeHtml(a.source)}</span><span class="badge risk-${a.riskLevel}">${escapeHtml(a.riskLevel)} risk</span>${actionBtns ? `<span class="item-top-spacer"></span>${actionBtns}` : ''}</div>
     <div class="item-title">${escapeHtml(humanizeAction(a.action))}</div>
@@ -426,8 +456,8 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   .card, .item-row { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 0.7rem 0.9rem; margin: 0.5rem 0; }
   .card.compact { padding: 0.55rem 0.8rem; }
   .item-row { border-left: 3px solid var(--border); }
-  .item-row[data-ticket-key] { cursor: pointer; }
-  .item-row[data-ticket-key]:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .item-row[data-ticket-key], .card[data-ticket-key] { cursor: pointer; }
+  .item-row[data-ticket-key]:hover, .card[data-ticket-key]:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .item-row.urgency-high { border-left-color: var(--high); }
   .item-row.urgency-medium { border-left-color: var(--medium); }
   .item-row.urgency-low { border-left-color: var(--low); }
@@ -508,7 +538,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
      no separate component library for one modal. */
   #ticket-dialog {
     border: 1px solid var(--border); outline: none; border-radius: 14px; padding: 0;
-    width: min(760px, 92vw); max-height: 88vh; overflow: hidden;
+    width: min(900px, 94vw); max-height: 88vh; overflow: hidden;
     background: var(--surface); color: var(--text);
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
   }
@@ -611,8 +641,8 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 <div class="grid">
   <div class="main">
     <div class="panel">
-      <div class="panel-head"><h2>Active work items</h2><span class="count">${items.length}</span></div>
-      ${items.length > 0 ? searchBox('Search your tickets…') : ''}
+      <div class="panel-head"><h2>Active work items</h2><span class="count">${displayItems.length}</span></div>
+      ${displayItems.length > 0 ? searchBox('Search your tickets…') : ''}
       ${workItemSections || '<p class="empty">Nothing tracked yet — run <code>npm run cli run</code>.</p>'}
     </div>
 
@@ -934,7 +964,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   // an interactive element inside it (a link, the copy button, Start/
   // Estimate), those already do their own thing.
   document.addEventListener('click', function (e) {
-    var row = e.target.closest('.item-row[data-ticket-key]');
+    var row = e.target.closest('.item-row[data-ticket-key], .card[data-ticket-key]');
     if (!row) return;
     if (e.target.closest('a, button, input, textarea')) return;
     openTicketDialog(row.getAttribute('data-ticket-key'));

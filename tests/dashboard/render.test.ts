@@ -207,6 +207,79 @@ describe('renderDashboard', () => {
     expect(html).toContain('<h2>Recently merged</h2><span class="count">1</span>');
     expect(html).toContain('Fix the thing');
     expect(html).toContain('org/repo#42');
+    // Its own Recently merged card can still open the detail dialog...
+    expect(html).toContain('data-ticket-key="PROJ-1"');
+    // ...but it's a "fyi" ticket whose only signal is the merge itself,
+    // which Recently merged already covers — it shouldn't also sit in
+    // Active work items as a duplicate, nor carry Start/Estimate (nothing
+    // left to start or estimate on already-merged work).
+    expect(html).toContain('<h2>Active work items</h2><span class="count">0</span>');
+    expect(html).not.toContain('data-key="PROJ-1" data-action="work"');
+    expect(html).not.toContain('data-key="PROJ-1" data-action="estimate"');
+  });
+
+  it('a recently-merged ticket that still lands in a real actionable category (not fyi) stays visible in Active work items, with its own CTAs', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    const recentlyClosedAt = new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000).toISOString();
+    await handle.db.insert(workItems).values({
+      id: 'PROJ-3',
+      category: 'needs_review', // e.g. an unrelated second PR on this ticket still needs review
+      urgency: 'high',
+      jiraKey: 'PROJ-3',
+      jira: { key: 'PROJ-3', project: 'PROJ', summary: 'Two PRs, one merged', status: 'In Progress', statusCategory: 'In Progress', priority: 'Medium', updated: now.toISOString(), url: 'http://x/PROJ-3' },
+      prs: [
+        {
+          repo: 'org/repo', number: 50, title: 'PROJ-3: first fix', url: 'http://x/pr/50',
+          state: 'merged', isDraft: false, branch: 'work-agent/proj-3-a', isAuthor: true,
+          reviewRequestedOfMe: false, reviewState: 'none', updatedAt: recentlyClosedAt, closedAt: recentlyClosedAt,
+        },
+        {
+          repo: 'org/repo', number: 51, title: 'PROJ-3: second fix', url: 'http://x/pr/51',
+          state: 'open', isDraft: false, branch: 'work-agent/proj-3-b', isAuthor: false,
+          reviewRequestedOfMe: true, reviewState: 'none', updatedAt: now.toISOString(),
+        },
+      ],
+      slackMessages: [],
+      reasons: ['Review requested on org/repo#51'],
+      firstSeenAt: now,
+      updatedAt: now,
+    });
+    const html = await renderDashboard(handle.db);
+    expect(html).toContain('<h2>Active work items</h2><span class="count">1</span>');
+    expect(html).toContain('data-key="PROJ-3" data-action="work"');
+    expect(html).toContain('data-key="PROJ-3" data-action="estimate"');
+  });
+
+  it('suppresses Start/Estimate on a pending-approval card whose target ticket is already recently merged', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    const recentlyClosedAt = new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000).toISOString();
+    await handle.db.insert(workItems).values({
+      id: 'PROJ-4',
+      category: 'fyi',
+      urgency: 'low',
+      jiraKey: 'PROJ-4',
+      jira: { key: 'PROJ-4', project: 'PROJ', summary: 'Already merged', status: 'In Progress', statusCategory: 'In Progress', priority: 'Medium', updated: now.toISOString(), url: 'http://x/PROJ-4' },
+      prs: [
+        {
+          repo: 'org/repo', number: 60, title: 'PROJ-4: fix', url: 'http://x/pr/60',
+          state: 'merged', isDraft: false, branch: 'work-agent/proj-4', isAuthor: true,
+          reviewRequestedOfMe: false, reviewState: 'none', updatedAt: recentlyClosedAt, closedAt: recentlyClosedAt,
+        },
+      ],
+      slackMessages: [],
+      reasons: [],
+      firstSeenAt: now,
+      updatedAt: now,
+    });
+    await new ApprovalsStore(handle.db).file({
+      id: 'exec-log-time:PROJ-4', source: 'engineering_execution', action: 'log_execution_time', target: 'PROJ-4',
+      context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
+    });
+    const html = await renderDashboard(handle.db);
+    expect(html).not.toContain('data-key="PROJ-4" data-action="work"');
+    expect(html).not.toContain('data-key="PROJ-4" data-action="estimate"');
   });
 
   it('does not list a PR merged more than 7 days ago under "Recently merged"', async () => {
