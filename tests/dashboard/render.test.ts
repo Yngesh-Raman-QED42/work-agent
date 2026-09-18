@@ -173,4 +173,87 @@ describe('renderDashboard', () => {
     expect(sectionMatch).not.toBeNull();
     expect(sectionMatch![1]).toBe('open');
   });
+
+  it('"Active work items" renders before "Needs your decision" in the page — the requested reorder', async () => {
+    handle = await createTestDb();
+    const html = await renderDashboard(handle.db);
+    expect(html.indexOf('<h2>Active work items</h2>')).toBeLessThan(html.indexOf('<h2>Needs your decision</h2>'));
+    expect(html.indexOf('<h2>Needs your decision</h2>')).toBeLessThan(html.indexOf('<h2>Approval history</h2>'));
+  });
+
+  it('lists a ticket with a PR merged within the last 7 days under "Recently merged"', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    const recentlyClosedAt = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString(); // 2 days ago
+    await handle.db.insert(workItems).values({
+      id: 'PROJ-1',
+      category: 'fyi',
+      urgency: 'low',
+      jiraKey: 'PROJ-1',
+      jira: { key: 'PROJ-1', project: 'PROJ', summary: 'Fix the thing', status: 'In Progress', statusCategory: 'In Progress', priority: 'Medium', updated: now.toISOString(), url: 'http://x/PROJ-1' },
+      prs: [
+        {
+          repo: 'org/repo', number: 42, title: 'PROJ-1: fix the thing', url: 'http://x/pr/42',
+          state: 'merged', isDraft: false, branch: 'work-agent/proj-1', isAuthor: true,
+          reviewRequestedOfMe: false, reviewState: 'none', updatedAt: recentlyClosedAt, closedAt: recentlyClosedAt,
+        },
+      ],
+      slackMessages: [],
+      reasons: [],
+      firstSeenAt: now,
+      updatedAt: now,
+    });
+    const html = await renderDashboard(handle.db);
+    expect(html).toContain('<h2>Recently merged</h2><span class="count">1</span>');
+    expect(html).toContain('Fix the thing');
+    expect(html).toContain('org/repo#42');
+  });
+
+  it('does not list a PR merged more than 7 days ago under "Recently merged"', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    const oldClosedAt = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString(); // 10 days ago
+    await handle.db.insert(workItems).values({
+      id: 'PROJ-2',
+      category: 'fyi',
+      urgency: 'low',
+      jiraKey: 'PROJ-2',
+      jira: { key: 'PROJ-2', project: 'PROJ', summary: 'Old merged thing', status: 'In Progress', statusCategory: 'In Progress', priority: 'Medium', updated: now.toISOString(), url: 'http://x/PROJ-2' },
+      prs: [
+        {
+          repo: 'org/repo', number: 41, title: 'PROJ-2: old merged thing', url: 'http://x/pr/41',
+          state: 'merged', isDraft: false, branch: 'work-agent/proj-2', isAuthor: true,
+          reviewRequestedOfMe: false, reviewState: 'none', updatedAt: oldClosedAt, closedAt: oldClosedAt,
+        },
+      ],
+      slackMessages: [],
+      reasons: [],
+      firstSeenAt: now,
+      updatedAt: now,
+    });
+    const html = await renderDashboard(handle.db);
+    // The ticket itself still legitimately shows elsewhere (Active work
+    // items) — what matters here is specifically the "Recently merged"
+    // panel's own count staying at 0, not the PR's title never appearing
+    // anywhere on the page.
+    expect(html).toContain('<h2>Recently merged</h2><span class="count">0</span>');
+    expect(html).toContain('Nothing merged in the last 7 days.');
+  });
+
+  it('shows Start/Estimate buttons on a pending-approval card whose target is a real ticket key, not on one that is not', async () => {
+    handle = await createTestDb();
+    const store = new ApprovalsStore(handle.db);
+    await store.file({
+      id: 'start-pr:PROJ-1', source: 'observation', action: 'create_branch_or_pr', target: 'PROJ-1',
+      context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
+    });
+    await store.file({
+      id: 'review:1', source: 'observation', action: 'review_pull_request', target: 'org/repo#1',
+      context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
+    });
+    const html = await renderDashboard(handle.db);
+    expect(html).toContain('data-key="PROJ-1" data-action="estimate"');
+    expect(html).toContain('data-key="PROJ-1" data-action="work"');
+    expect(html).not.toContain('data-key="org/repo#1"');
+  });
 });

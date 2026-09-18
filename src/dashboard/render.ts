@@ -5,6 +5,7 @@ import { workItems, approvals, executionTasks, slackSignals, briefings } from '.
 import type { JiraIssue, GitHubPr } from '../models/types.js';
 import { summarizeConversations } from '../agents/slackIntelligence/conversationSummary.js';
 import { timeEntriesInRange, formatMinutes } from '../agents/workLog/timeEntry.js';
+import { isValidTicketKey } from './launchSession.js';
 
 const SLACK_CATEGORY_BADGE_CLASS: Record<string, string> = {
   urgent: 'risk-high',
@@ -102,6 +103,11 @@ const CATEGORY_ORDER = ['needs_review', 'needs_action', 'blocked', 'waiting_on_o
 const OPEN_BY_DEFAULT = new Set(['needs_review', 'needs_action', 'blocked']);
 
 const ACTIVE_TASK_STATUSES = new Set(['selected', 'implementing', 'checking', 'gated_stop', 'pr_opened', 'monitoring']);
+// Independent of MERGED_LOOKBACK_MS in the GitHub connector (that one
+// bounds what's fetched at all — generously, so a delayed pipeline run
+// doesn't lose data). This is the actual display window for the
+// dashboard's own "Recently merged" panel.
+const MERGED_DISPLAY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 function hasJiraCreds(): boolean {
   return !!(process.env.JIRA_BASE_URL && process.env.JIRA_EMAIL && process.env.JIRA_API_TOKEN);
@@ -211,20 +217,65 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 </details>`;
   }).join('\n');
 
+  // Once a PR merges, the ticket drops out of every "needs action" bucket
+  // above — correct, but it also means the merge itself becomes invisible.
+  // This is its own short-lived panel instead: every ticket with a PR that
+  // merged in the last 7 days, regardless of what category/status the
+  // ticket landed in otherwise. Naturally self-clears after a week (see
+  // MERGED_DISPLAY_WINDOW_MS) or once the underlying PR falls out of
+  // LiveGitHubConnector's own longer fetch window — nothing to reconcile
+  // here specifically.
+  const recentlyMerged = items
+    .map((item) => {
+      const jira = item.jira as JiraIssue | null;
+      const prs = (item.prs as GitHubPr[]).filter(
+        (pr) => pr.state === 'merged' && pr.closedAt && Date.now() - new Date(pr.closedAt).getTime() <= MERGED_DISPLAY_WINDOW_MS,
+      );
+      return prs.length > 0 ? { item, jira, prs } : null;
+    })
+    .filter((x): x is { item: (typeof items)[number]; jira: JiraIssue | null; prs: GitHubPr[] } => x !== null)
+    .sort((a, b) => Math.max(...b.prs.map((p) => +new Date(p.closedAt!))) - Math.max(...a.prs.map((p) => +new Date(p.closedAt!))));
+
+  const recentlyMergedHtml =
+    recentlyMerged.length === 0
+      ? '<p class="empty">Nothing merged in the last 7 days.</p>'
+      : recentlyMerged
+          .map(({ item, jira, prs }) => {
+            const keyLabel = jira ? idChip(jira.key, jira.url) : idChip(item.id);
+            const heading = jira?.summary ?? prs[0]!.title;
+            const prLines = prs
+              .map((pr) => {
+                const mergedAgo = new Date(pr.closedAt!).toLocaleDateString();
+                return `<div class="pr-link">Merged ${escapeHtml(mergedAgo)}: ${idChip(`${pr.repo}#${pr.number}`, pr.url)} — ${escapeHtml(pr.title)}</div>`;
+              })
+              .join('');
+            return `<div class="card compact">
+  <div class="item-title">${keyLabel}</div>
+  <div class="item-summary">${escapeHtml(heading)}</div>
+  ${prLines}
+</div>`;
+          })
+          .join('\n');
+
   const approvalsHtml =
     pendingApprovals.length === 0
       ? '<p class="empty">All clear — nothing waiting on a decision.</p>'
       : pendingApprovals
-          .map(
-            (a) => `<div class="card risk-${a.riskLevel}">
-    <div class="approval-head"><span class="badge source">${escapeHtml(a.source)}</span><span class="badge risk-${a.riskLevel}">${escapeHtml(a.riskLevel)} risk</span></div>
+          .map((a) => {
+            // Only meaningful when the target actually is a ticket key —
+            // an approval like "review this pull request" targets
+            // "repo#123", not a Jira key, and Start/Estimate wouldn't mean
+            // anything there.
+            const actionBtns = isValidTicketKey(a.target) ? `${estimateTaskBtn(a.target)}${startTaskBtn(a.target)}` : '';
+            return `<div class="card risk-${a.riskLevel}">
+    <div class="approval-head"><span class="badge source">${escapeHtml(a.source)}</span><span class="badge risk-${a.riskLevel}">${escapeHtml(a.riskLevel)} risk</span>${actionBtns ? `<span class="item-top-spacer"></span>${actionBtns}` : ''}</div>
     <div class="item-title">${escapeHtml(humanizeAction(a.action))}</div>
     <div class="item-sub">on ${idChip(a.target, a.targetUrl)}</div>
     <div class="item-summary">${escapeHtml(a.reasoning)}</div>
     <div class="recommended"><strong>Recommended:</strong> ${escapeHtml(a.recommendedAction)}</div>
     <div class="approve-cmd">npm run cli approvals approve ${escapeHtml(a.id)}<br>npm run cli approvals reject ${escapeHtml(a.id)}</div>
-  </div>`,
-          )
+  </div>`;
+          })
           .join('\n');
 
   const approvalHistoryHtml =
@@ -416,7 +467,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   .badge.urgency-low, .badge.risk-low { background: var(--low-wash); color: var(--low); }
   .badge.source { background: var(--accent-wash); color: var(--accent-strong); }
   .badge.status { background: var(--accent-wash); color: var(--accent-strong); }
-  .approval-head { margin-bottom: 0.3rem; }
+  .approval-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.3rem; }
   .recommended { font-size: 0.82rem; margin-top: 0.4rem; }
   .approve-cmd { font-family: var(--mono); font-size: 0.7rem; background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 0.4rem 0.6rem; margin-top: 0.5rem; color: var(--muted); white-space: pre; overflow-x: auto; }
 
@@ -472,6 +523,27 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 <div class="grid">
   <div class="main">
     <div class="panel">
+      <div class="panel-head"><h2>Active work items</h2><span class="count">${items.length}</span></div>
+      ${items.length > 0 ? searchBox('Search your tickets…') : ''}
+      ${workItemSections || '<p class="empty">Nothing tracked yet — run <code>npm run cli run</code>.</p>'}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Recently merged</h2><span class="count">${recentlyMerged.length}</span></div>
+      ${recentlyMerged.length > 0 ? searchBox('Search recently merged…') : ''}
+      ${recentlyMergedHtml}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Latest daily briefing</h2></div>
+      ${
+        briefingHtml
+          ? `<details><summary>Show full briefing</summary><div class="briefing">${briefingHtml}</div></details>`
+          : '<p class="empty">No briefing generated yet — run <code>npm run cli run</code>.</p>'
+      }
+    </div>
+
+    <div class="panel">
       <div class="panel-head"><h2>Needs your decision</h2><span class="count">${pendingApprovals.length}</span></div>
       ${pendingApprovals.length > 0 ? searchBox('Search pending approvals…') : ''}
       ${approvalsHtml}
@@ -484,21 +556,6 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
         <summary>Show the last ${resolvedApprovals.length} resolved</summary>
         ${approvalHistoryHtml}
       </details>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head"><h2>Active work items</h2><span class="count">${items.length}</span></div>
-      ${items.length > 0 ? searchBox('Search your tickets…') : ''}
-      ${workItemSections || '<p class="empty">Nothing tracked yet — run <code>npm run cli run</code>.</p>'}
-    </div>
-
-    <div class="panel">
-      <div class="panel-head"><h2>Latest daily briefing</h2></div>
-      ${
-        briefingHtml
-          ? `<details><summary>Show full briefing</summary><div class="briefing">${briefingHtml}</div></details>`
-          : '<p class="empty">No briefing generated yet — run <code>npm run cli run</code>.</p>'
-      }
     </div>
   </div>
 
