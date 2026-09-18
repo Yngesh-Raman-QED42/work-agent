@@ -192,7 +192,10 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
           .map((pr) => `<div class="pr-link">Linked PR: ${idChip(`${pr.repo}#${pr.number}`, pr.url)} — ${escapeHtml(pr.title)}</div>`)
           .join('');
         const reasons = (item.reasons as string[]).map((r) => `<li>${escapeHtml(r)}</li>`).join('');
-        return `<div class="item-row urgency-${item.urgency}">
+        // Only tickets with a real Jira key open the detail dialog — a
+        // standalone PR/Slack-mention item has no Jira issue behind it to
+        // show. See the ticket-detail-open click handler at the bottom.
+        return `<div class="item-row urgency-${item.urgency}"${jira ? ` data-ticket-key="${escapeHtml(jira.key)}"` : ''}>
   <div class="item-top">
     <span class="item-key">${keyLabel}</span>
     <span class="badge urgency-${item.urgency}">${escapeHtml(item.urgency)}</span>
@@ -353,7 +356,9 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Work Agent</title>
-<meta http-equiv="refresh" content="60">
+<!-- No meta-refresh: a blind reload every 60s would blow away an open ticket
+     dialog and anything half-typed in it. See the JS-driven refresh at the
+     bottom instead, which skips the reload while the dialog is open. -->
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
 <style>
@@ -421,6 +426,8 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   .card, .item-row { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 0.7rem 0.9rem; margin: 0.5rem 0; }
   .card.compact { padding: 0.55rem 0.8rem; }
   .item-row { border-left: 3px solid var(--border); }
+  .item-row[data-ticket-key] { cursor: pointer; }
+  .item-row[data-ticket-key]:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .item-row.urgency-high { border-left-color: var(--high); }
   .item-row.urgency-medium { border-left-color: var(--medium); }
   .item-row.urgency-low { border-left-color: var(--low); }
@@ -495,6 +502,69 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 
   .actions-note { font-size: 0.78rem; color: var(--faint); border-top: 1px solid var(--border); margin-top: 1.5rem; padding-top: 1rem; }
   .actions-note code { font-family: var(--mono); background: var(--surface); border: 1px solid var(--border); padding: 0.05rem 0.35rem; border-radius: 4px; }
+
+  /* Ticket detail dialog — a native <dialog>, populated client-side from
+     GET /ticket-detail. Kept in the same stylesheet as everything else;
+     no separate component library for one modal. */
+  #ticket-dialog { border: none; border-radius: 14px; padding: 0; width: min(760px, 92vw); max-height: 88vh; background: var(--surface); color: var(--text); }
+  #ticket-dialog::backdrop { background: rgba(10, 16, 17, 0.55); }
+  #ticket-dialog-body { padding: 1.3rem 1.5rem 1.6rem; overflow-y: auto; max-height: 88vh; }
+  .dlg-loading, .dlg-error { padding: 2rem 0; text-align: center; color: var(--muted); }
+  .dlg-error { color: var(--high); }
+  .dlg-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 0.9rem; }
+  .dlg-key-line { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); display: flex; align-items: center; gap: 0.5rem; }
+  .dlg-summary { font-size: 1.15rem; margin: 0.2rem 0 0.5rem; text-wrap: balance; }
+  .dlg-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  .dlg-close { flex-shrink: 0; width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); cursor: pointer; font-size: 0.9rem; line-height: 1; }
+  .dlg-close:hover { background: var(--surface); color: var(--text); }
+
+  .dlg-meta-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.7rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem 0.9rem; margin-bottom: 1.1rem; }
+  .dlg-meta-label { display: block; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); margin-bottom: 0.15rem; }
+  .dlg-meta-value { font-size: 0.85rem; }
+
+  .dlg-section { margin-bottom: 1.3rem; }
+  .dlg-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
+  .dlg-section h3 { font-size: 0.85rem; margin: 0 0 0.5rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
+  .dlg-section-head h3 { margin-bottom: 0; }
+  .dlg-mini-btn { font-family: var(--sans); font-size: 0.72rem; font-weight: 600; background: var(--surface); color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 0.2rem 0.6rem; cursor: pointer; }
+  .dlg-mini-btn:hover { background: var(--surface-2); color: var(--text); }
+  .dlg-mini-btn.primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+  .dlg-mini-btn.primary:hover { background: var(--accent-strong); }
+  .dlg-mini-btn:disabled { opacity: 0.6; cursor: default; }
+
+  .dlg-description { font-size: 0.88rem; line-height: 1.6; }
+  .dlg-description p:first-child { margin-top: 0; }
+  .dlg-description p:last-child { margin-bottom: 0; }
+  .dlg-description pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem 0.8rem; overflow-x: auto; }
+  .dlg-description table.adf-table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+  .dlg-description table.adf-table td, .dlg-description table.adf-table th { border: 1px solid var(--border); padding: 0.3rem 0.5rem; }
+  .dlg-description-edit textarea, .dlg-log-time-form input[type="text"], .dlg-add-comment-form textarea {
+    width: 100%; font-family: var(--sans); font-size: 0.85rem; color: var(--text);
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; padding: 0.55rem 0.7rem; outline: none; resize: vertical;
+  }
+  .dlg-description-edit textarea:focus, .dlg-log-time-form input:focus, .dlg-add-comment-form textarea:focus { border-color: var(--accent); }
+  .dlg-edit-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
+  .dlg-edit-warning { font-size: 0.72rem; color: var(--faint); margin: 0.5rem 0 0; }
+
+  .dlg-attachments { list-style: none; margin: 0; padding: 0; }
+  .dlg-attachments li { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+  .dlg-attachments li:last-child { border-bottom: none; }
+  .dlg-attach-meta { color: var(--faint); font-size: 0.72rem; }
+
+  .dlg-worklog-row, .dlg-comment-row { padding: 0.55rem 0; border-bottom: 1px solid var(--border); }
+  .dlg-worklog-row:last-child, .dlg-comment-row:last-child { border-bottom: none; }
+  .dlg-entry-head { display: flex; justify-content: space-between; font-size: 0.76rem; color: var(--muted); margin-bottom: 0.2rem; }
+  .dlg-comment-body { font-size: 0.85rem; line-height: 1.55; }
+  .dlg-comment-body p:first-child { margin-top: 0; } .dlg-comment-body p:last-child { margin-bottom: 0; }
+
+  .dlg-log-time-form { display: flex; gap: 0.5rem; margin-top: 0.7rem; flex-wrap: wrap; }
+  .dlg-log-time-form input[type="number"] { width: 100px; font-family: var(--sans); font-size: 0.85rem; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; padding: 0.5rem 0.7rem; }
+  .dlg-log-time-form input[type="text"] { flex: 1 1 160px; }
+  .dlg-add-comment-form { margin-top: 0.7rem; }
+  .dlg-add-comment-form textarea { min-height: 3.2rem; margin-bottom: 0.5rem; }
+  .dlg-inline-msg { font-size: 0.76rem; margin-top: 0.4rem; }
+  .dlg-inline-msg.ok { color: var(--ok); }
+  .dlg-inline-msg.err { color: var(--high); }
 </style>
 </head>
 <body>
@@ -580,7 +650,11 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   </div>
 </div>
 
-<p class="actions-note">Read-only. To act: <code>npm run cli approvals approve|reject &lt;id&gt;</code>, or ask me directly in a live session.</p>
+<p class="actions-note">Mostly read-only — click a ticket to see full detail and log time/comment/edit its description directly. To act on an approval: <code>npm run cli approvals approve|reject &lt;id&gt;</code>, or ask me directly in a live session.</p>
+
+<dialog id="ticket-dialog">
+  <div id="ticket-dialog-body"><div class="dlg-loading">Loading…</div></div>
+</dialog>
 
 <script>
 (function () {
@@ -679,6 +753,296 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
       if (d.dataset.wasOpen === undefined) d.dataset.wasOpen = d.open ? '1' : '0';
       if (!query) d.open = d.dataset.wasOpen === '1';
     });
+  });
+
+  // ---------------------------------------------------------------------
+  // Ticket detail dialog — click a ticket card to see the full Jira issue
+  // (description, attachments, time tracking, comments) without leaving
+  // the dashboard, and log time / add a comment / edit the description
+  // directly from here. Every write below lands on the real Jira issue
+  // the moment you submit it — same as any other action you take yourself,
+  // there's no separate approval step for your own explicit click.
+  // ---------------------------------------------------------------------
+  var ticketDialog = document.getElementById('ticket-dialog');
+  var ticketDialogBody = document.getElementById('ticket-dialog-body');
+  var currentTicketDetail = null;
+
+  // Replaces the old blind <meta http-equiv="refresh">: a full-page reload
+  // every 60s used to blow away an open ticket dialog (and anything
+  // half-typed in its comment/description/log-time fields) with no way to
+  // tell it not to. This checks first, and just tries again shortly if the
+  // dialog is currently open, instead of skipping the refresh forever.
+  (function scheduleRefresh() {
+    setTimeout(function () {
+      if (ticketDialog.open) { scheduleRefresh(); return; }
+      location.reload();
+    }, 60000);
+  })();
+
+  function escHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
+  function fmtDateTime(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return escHtml(iso);
+    return d.toLocaleString();
+  }
+
+  function fmtBytes(n) {
+    if (!n && n !== 0) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function metaCell(label, value) {
+    return '<div><span class="dlg-meta-label">' + escHtml(label) + '</span><span class="dlg-meta-value">' + escHtml(value) + '</span></div>';
+  }
+
+  function renderTicketDialog(d) {
+    var chips = '<span class="chip">' + escHtml(d.status) + '</span>' +
+      '<span class="chip">' + escHtml(d.priority) + ' priority</span>' +
+      '<span class="chip">' + escHtml(d.issueType) + '</span>' +
+      '<span class="chip">' + escHtml(d.project) + '</span>';
+    (d.labels || []).forEach(function (l) { chips += '<span class="chip">' + escHtml(l) + '</span>'; });
+    (d.components || []).forEach(function (c) { chips += '<span class="chip">' + escHtml(c) + '</span>'; });
+
+    var meta = '<div class="dlg-meta-grid">' +
+      metaCell('Assignee', d.assignee || 'Unassigned') +
+      metaCell('Reporter', d.reporter || '—') +
+      metaCell('Created', fmtDateTime(d.created)) +
+      metaCell('Updated', fmtDateTime(d.updated)) +
+      metaCell('Original estimate', d.originalEstimate || '—') +
+      metaCell('Remaining estimate', d.remainingEstimate || '—') +
+      metaCell('Time spent', d.timeSpent || '—') +
+      '</div>';
+
+    var descriptionHtml = d.descriptionHtml && d.descriptionHtml.length > 0 ? d.descriptionHtml : '<p class="empty">No description.</p>';
+
+    var attachmentsHtml = '';
+    if (d.attachments && d.attachments.length > 0) {
+      attachmentsHtml = '<div class="dlg-section"><h3>Attachments (' + d.attachments.length + ')</h3><ul class="dlg-attachments">' +
+        d.attachments.map(function (a) {
+          var href = '/jira-attachment?key=' + encodeURIComponent(d.key) + '&id=' + encodeURIComponent(a.id);
+          return '<li><a href="' + href + '" download="' + escHtml(a.filename) + '">' + escHtml(a.filename) + '</a>' +
+            '<span class="dlg-attach-meta">' + fmtBytes(a.size) + ' · ' + escHtml(a.author) + ' · ' + fmtDateTime(a.created) + '</span></li>';
+        }).join('') +
+        '</ul></div>';
+    }
+
+    var worklogsHtml = (d.worklogs && d.worklogs.length > 0)
+      ? d.worklogs.map(function (w) {
+          return '<div class="dlg-worklog-row"><div class="dlg-entry-head"><span>' + escHtml(w.author) + '</span>' +
+            '<span>' + fmtDateTime(w.started) + ' · ' + escHtml(w.timeSpent) + '</span></div>' +
+            (w.comment ? '<div class="dlg-comment-body">' + escHtml(w.comment) + '</div>' : '') + '</div>';
+        }).join('')
+      : '<p class="empty">No time logged yet.</p>';
+
+    var commentsHtml = (d.comments && d.comments.length > 0)
+      ? d.comments.map(function (c) {
+          return '<div class="dlg-comment-row"><div class="dlg-entry-head"><span>' + escHtml(c.author) + '</span>' +
+            '<span>' + fmtDateTime(c.created) + '</span></div><div class="dlg-comment-body">' + c.bodyHtml + '</div></div>';
+        }).join('')
+      : '<p class="empty">No comments yet.</p>';
+
+    ticketDialogBody.innerHTML =
+      '<div class="dlg-header">' +
+        '<div>' +
+          '<div class="dlg-key-line"><a href="' + escHtml(d.url) + '" target="_blank" rel="noopener">' + escHtml(d.key) + ' ↗ open in Jira</a></div>' +
+          '<h2 class="dlg-summary">' + escHtml(d.summary) + '</h2>' +
+          '<div class="dlg-chips">' + chips + '</div>' +
+        '</div>' +
+        '<button type="button" class="dlg-close" aria-label="Close">✕</button>' +
+      '</div>' +
+      meta +
+      '<div class="dlg-section">' +
+        '<div class="dlg-section-head"><h3>Description</h3><button type="button" class="dlg-mini-btn dlg-edit-desc-btn">Edit</button></div>' +
+        '<div class="dlg-description" data-view>' + descriptionHtml + '</div>' +
+        '<div class="dlg-description-edit" hidden>' +
+          '<textarea rows="8">' + escHtml(d.descriptionPlain) + '</textarea>' +
+          '<div class="dlg-edit-actions"><button type="button" class="dlg-mini-btn primary dlg-save-desc-btn">Save</button>' +
+          '<button type="button" class="dlg-mini-btn dlg-cancel-desc-btn">Cancel</button></div>' +
+          '<p class="dlg-edit-warning">Saving replaces the description with plain text — existing formatting (headings, links, lists) will be lost.</p>' +
+          '<div class="dlg-inline-msg dlg-desc-msg"></div>' +
+        '</div>' +
+      '</div>' +
+      attachmentsHtml +
+      '<div class="dlg-section">' +
+        '<h3>Time tracking</h3>' +
+        '<div class="dlg-worklogs">' + worklogsHtml + '</div>' +
+        '<form class="dlg-log-time-form">' +
+          '<input type="number" step="1" min="1" name="minutes" placeholder="Minutes" required>' +
+          '<input type="text" name="comment" placeholder="What did you work on? (optional)">' +
+          '<button type="submit" class="dlg-mini-btn primary">Log time</button>' +
+        '</form>' +
+        '<div class="dlg-inline-msg dlg-logtime-msg"></div>' +
+      '</div>' +
+      '<div class="dlg-section">' +
+        '<h3>Comments (' + (d.comments ? d.comments.length : 0) + ')</h3>' +
+        '<div class="dlg-comments">' + commentsHtml + '</div>' +
+        '<form class="dlg-add-comment-form">' +
+          '<textarea name="text" rows="2" placeholder="Add a comment…" required></textarea>' +
+          '<button type="submit" class="dlg-mini-btn primary">Comment</button>' +
+        '</form>' +
+        '<div class="dlg-inline-msg dlg-comment-msg"></div>' +
+      '</div>';
+  }
+
+  function openTicketDialog(key) {
+    currentTicketDetail = null;
+    ticketDialogBody.innerHTML = '<div class="dlg-loading">Loading ' + escHtml(key) + '…</div>';
+    if (!ticketDialog.open) ticketDialog.showModal();
+    fetch('/ticket-detail?key=' + encodeURIComponent(key))
+      .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok) {
+          ticketDialogBody.innerHTML = '<div class="dlg-error">Could not load ' + escHtml(key) + ': ' +
+            escHtml((result.data && result.data.error) || 'unknown error') + '</div>';
+          return;
+        }
+        currentTicketDetail = result.data;
+        renderTicketDialog(result.data);
+      })
+      .catch(function (err) {
+        ticketDialogBody.innerHTML = '<div class="dlg-error">Could not load ' + escHtml(key) + ': ' + escHtml(String(err)) + '</div>';
+      });
+  }
+
+  // Open on a ticket card click — but not when the click actually landed on
+  // an interactive element inside it (a link, the copy button, Start/
+  // Estimate), those already do their own thing.
+  document.addEventListener('click', function (e) {
+    var row = e.target.closest('.item-row[data-ticket-key]');
+    if (!row) return;
+    if (e.target.closest('a, button, input, textarea')) return;
+    openTicketDialog(row.getAttribute('data-ticket-key'));
+  });
+
+  // Close via the ✕ button, or a click on the backdrop — a click directly
+  // on the <dialog> element itself (not a descendant) only ever happens
+  // for a backdrop click, since #ticket-dialog-body fills the dialog's
+  // entire content box with no dead space around it.
+  ticketDialog.addEventListener('click', function (e) {
+    if (e.target.closest('.dlg-close')) { ticketDialog.close(); return; }
+    if (e.target === ticketDialog) ticketDialog.close();
+  });
+
+  ticketDialogBody.addEventListener('click', function (e) {
+    if (e.target.closest('.dlg-edit-desc-btn')) {
+      ticketDialogBody.querySelector('.dlg-description[data-view]').hidden = true;
+      ticketDialogBody.querySelector('.dlg-description-edit').hidden = false;
+      return;
+    }
+    if (e.target.closest('.dlg-cancel-desc-btn')) {
+      ticketDialogBody.querySelector('.dlg-description-edit').hidden = true;
+      ticketDialogBody.querySelector('.dlg-description[data-view]').hidden = false;
+      return;
+    }
+    var saveBtn = e.target.closest('.dlg-save-desc-btn');
+    if (saveBtn) {
+      var textarea = ticketDialogBody.querySelector('.dlg-description-edit textarea');
+      var descMsg = ticketDialogBody.querySelector('.dlg-desc-msg');
+      var descKey = currentTicketDetail.key;
+      saveBtn.disabled = true;
+      descMsg.textContent = '';
+      fetch('/ticket-description?key=' + encodeURIComponent(descKey), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: textarea.value }),
+      })
+        .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+        .then(function (result) {
+          if (!result.ok) {
+            saveBtn.disabled = false;
+            descMsg.className = 'dlg-inline-msg err dlg-desc-msg';
+            descMsg.textContent = 'Could not save: ' + ((result.data && result.data.error) || 'unknown error');
+            return;
+          }
+          openTicketDialog(descKey); // re-fetch — shows the real (now plain-text) description
+        })
+        .catch(function (err) {
+          saveBtn.disabled = false;
+          descMsg.className = 'dlg-inline-msg err dlg-desc-msg';
+          descMsg.textContent = 'Could not save: ' + err;
+        });
+    }
+  });
+
+  document.addEventListener('submit', function (e) {
+    var logForm = e.target.closest('.dlg-log-time-form');
+    if (logForm) {
+      e.preventDefault();
+      var logKey = currentTicketDetail.key;
+      var minutesInput = logForm.querySelector('input[name="minutes"]');
+      var commentInput = logForm.querySelector('input[name="comment"]');
+      var logMsg = ticketDialogBody.querySelector('.dlg-logtime-msg');
+      var minutes = Number(minutesInput.value);
+      if (!minutes || minutes <= 0) {
+        logMsg.className = 'dlg-inline-msg err dlg-logtime-msg';
+        logMsg.textContent = 'Enter a positive number of minutes.';
+        return;
+      }
+      var logBtn = logForm.querySelector('button[type="submit"]');
+      logBtn.disabled = true;
+      logMsg.textContent = '';
+      fetch('/ticket-log-time?key=' + encodeURIComponent(logKey), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ minutes: minutes, comment: commentInput.value || undefined }),
+      })
+        .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+        .then(function (result) {
+          if (!result.ok) {
+            logBtn.disabled = false;
+            logMsg.className = 'dlg-inline-msg err dlg-logtime-msg';
+            logMsg.textContent = 'Could not log time: ' + ((result.data && result.data.error) || 'unknown error');
+            return;
+          }
+          openTicketDialog(logKey); // re-fetch — updated timeSpent + worklog list
+        })
+        .catch(function (err) {
+          logBtn.disabled = false;
+          logMsg.className = 'dlg-inline-msg err dlg-logtime-msg';
+          logMsg.textContent = 'Could not log time: ' + err;
+        });
+      return;
+    }
+
+    var commentForm = e.target.closest('.dlg-add-comment-form');
+    if (commentForm) {
+      e.preventDefault();
+      var commentKey = currentTicketDetail.key;
+      var textInput = commentForm.querySelector('textarea[name="text"]');
+      var commentMsg = ticketDialogBody.querySelector('.dlg-comment-msg');
+      if (!textInput.value.trim()) return;
+      var commentBtn = commentForm.querySelector('button[type="submit"]');
+      commentBtn.disabled = true;
+      commentMsg.textContent = '';
+      fetch('/ticket-comment?key=' + encodeURIComponent(commentKey), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: textInput.value }),
+      })
+        .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+        .then(function (result) {
+          if (!result.ok) {
+            commentBtn.disabled = false;
+            commentMsg.className = 'dlg-inline-msg err dlg-comment-msg';
+            commentMsg.textContent = 'Could not add comment: ' + ((result.data && result.data.error) || 'unknown error');
+            return;
+          }
+          openTicketDialog(commentKey); // re-fetch — shows the new comment
+        })
+        .catch(function (err) {
+          commentBtn.disabled = false;
+          commentMsg.className = 'dlg-inline-msg err dlg-comment-msg';
+          commentMsg.textContent = 'Could not add comment: ' + err;
+        });
+    }
   });
 })();
 </script>

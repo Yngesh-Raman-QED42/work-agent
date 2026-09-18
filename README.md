@@ -130,6 +130,50 @@ unverified against a real Windows machine). The button itself doesn't decide whe
 actually eligible for autonomous work — it just starts the session; `exec-start`'s own policy check
 still has the final say once you ask it to work on the ticket.
 
+The "⏱ Estimate" button next to it opens the same kind of session, but with a read-only prompt: no
+code, no branch, no PR, no writes anywhere — just a full-lifecycle time estimate (development,
+review, QA, deployment, plus a deliberately generous buffer), calibrated to this being AI-assisted
+implementation rather than manual coding (see `CLAUDE.md`'s "If asked to estimate a ticket"
+section). The estimate is printed in the opened terminal only, for now — nothing is written back to
+Jira or the dashboard yet; that's deliberately deferred until the estimation approach itself is
+proven good.
+
+### Ticket detail dialog — click any ticket card
+
+Clicking a ticket card in "Active work items" opens a dialog with the full Jira issue: description
+(rendered from real ADF to HTML — headings, links, lists, tables; see `adfToHtml` in
+`src/integrations/jira/adf.ts`), assignee/reporter/dates, original/remaining estimate and time
+spent, attachments (proxied through `GET /jira-attachment` so the browser never needs its own Jira
+credentials), every comment, and the full worklog. Backed by
+`src/integrations/jira/issueFullDetail.ts` (`LiveJiraFullDetailReader`) and `GET /ticket-detail` in
+`server.ts` — a separate, richer read path from `detail.ts`'s `TaskContext` (which Task
+Intelligence/Engineering Execution use and only ever need summary + description + comments for).
+
+The dialog can also write back to the real ticket, immediately, the moment you submit:
+- **Log time** — a minutes + optional comment form, writing a real Jira worklog
+  (`POST /ticket-log-time`, reusing the same `LiveJiraWorklogWriter` the CLI's `log-time --jira`
+  path uses) and a matching local time entry, so it shows up in the dashboard's own "Today" panel
+  too.
+- **Add a comment** — `POST /ticket-comment`, via the same `LiveJiraIssueUpdater.addComment` that
+  Engineering Execution itself uses to post its own PR-link comments.
+- **Edit the description** — `POST /ticket-description`
+  (`LiveJiraIssueUpdater.updateDescription`, new). Deliberately lossy: the edit box is pre-filled
+  from a *plain-text* flatten of the current description, and saving replaces the whole field with
+  plain text — any existing rich formatting (headings, links, lists) is gone once you save. The
+  dialog says this explicitly before you save. A full rich-text round trip was out of scope; this
+  exists for a quick "fix a typo"/"add a line" edit without opening Jira, not to replace Jira's own
+  editor for anything elaborate.
+
+None of these writes go through the approval queue — same reasoning as `log-time --jira`: you,
+clicking a button in your own dashboard about your own ticket, *is* the approval. Nothing here can
+merge a PR, deploy anything, or send a Slack message — those guardrails live entirely outside this
+feature and aren't affected by it.
+
+The dashboard's old blunt `<meta http-equiv="refresh" content="60">` would have blown away an open
+dialog (and anything half-typed in it) every 60 seconds with no way to prevent it — replaced with a
+small JS-driven refresh that checks whether the ticket dialog is open first, and just waits and
+checks again shortly if it is, instead of reloading out from under you.
+
 Tests (no Docker needed — pglite is in-memory):
 
 ```bash
