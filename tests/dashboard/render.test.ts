@@ -357,6 +357,39 @@ describe('renderDashboard', () => {
     expect(html).toMatch(/<button[^>]*class="icon-btn archive-btn"[^>]*>\s*<svg/);
   });
 
+  it('also puts the archive button on a pending-approval card targeting a ticket, using the ticket\'s own summary/url when known', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(workItems).values({
+      id: 'PROJ-23',
+      category: 'needs_action',
+      urgency: 'medium',
+      jiraKey: 'PROJ-23',
+      jira: { key: 'PROJ-23', project: 'PROJ', summary: 'Needs a decision', status: 'To Do', statusCategory: 'To Do', priority: 'Medium', updated: now.toISOString(), url: 'http://x/PROJ-23' },
+      prs: [],
+      slackMessages: [],
+      reasons: [],
+      firstSeenAt: now,
+      updatedAt: now,
+    });
+    await new ApprovalsStore(handle.db).file({
+      id: 'create-branch:PROJ-23', source: 'task_intelligence', action: 'create_branch_or_pr', target: 'PROJ-23',
+      context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
+    });
+    const html = await renderDashboard(handle.db);
+    expect(html).toContain('key=PROJ-23&amp;summary=Needs%20a%20decision&amp;url=http%3A%2F%2Fx%2FPROJ-23');
+  });
+
+  it('does not put an archive button on an approval card targeting a PR, not a ticket', async () => {
+    handle = await createTestDb();
+    await new ApprovalsStore(handle.db).file({
+      id: 'review:org/repo#9', source: 'pr_monitoring', action: 'review_pull_request', target: 'org/repo#9',
+      targetUrl: 'http://x/pr/9', context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
+    });
+    const html = await renderDashboard(handle.db);
+    expect(html).not.toContain('data-endpoint="/archive-ticket"');
+  });
+
   it('an archived ticket is hidden from Active work items and pending approvals, and survives a fresh render (simulating a restart)', async () => {
     handle = await createTestDb();
     const now = new Date();

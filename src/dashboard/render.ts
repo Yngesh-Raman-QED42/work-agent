@@ -73,12 +73,15 @@ const UNARCHIVE_ICON =
 
 /** POSTs to /archive-ticket — a purely local, dashboard-only "stop showing
  * me this" flag; never writes anything to Jira. Icon-only by design (no
- * label) so it doesn't compete with the real action CTAs on the card. */
-function archiveTicketBtn(jira: JiraIssue): string {
-  const params = `key=${encodeURIComponent(jira.key)}&summary=${encodeURIComponent(jira.summary)}&url=${encodeURIComponent(jira.url)}`;
+ * label) so it doesn't compete with the real action CTAs on the card.
+ * Takes a bare {key, summary, url} rather than a full JiraIssue so the same
+ * button works on both a ticket card (which has one) and an approval card
+ * (which only ever has the bare target key + a possibly-null targetUrl). */
+function archiveTicketBtn(ref: { key: string; summary: string; url: string }): string {
+  const params = `key=${encodeURIComponent(ref.key)}&summary=${encodeURIComponent(ref.summary)}&url=${encodeURIComponent(ref.url)}`;
   return (
     `<button type="button" class="icon-btn archive-btn" data-endpoint="/archive-ticket" data-params="${escapeHtml(params)}" ` +
-    `title="Archive ${escapeHtml(jira.key)} — hide it from the dashboard until you bring it back" aria-label="Archive ${escapeHtml(jira.key)}">${ARCHIVE_ICON}</button>`
+    `title="Archive ${escapeHtml(ref.key)} — hide it from the dashboard until you bring it back" aria-label="Archive ${escapeHtml(ref.key)}">${ARCHIVE_ICON}</button>`
   );
 }
 
@@ -208,9 +211,11 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   // can still link out to the ticket, using whatever URL observation
   // already captured for that key.
   const jiraUrlByKey = new Map<string, string>();
+  const jiraSummaryByKey = new Map<string, string>();
   for (const item of rawItems) {
     const jira = item.jira as JiraIssue | null;
     if (jira?.key && jira.url) jiraUrlByKey.set(jira.key, jira.url);
+    if (jira?.key && jira.summary) jiraSummaryByKey.set(jira.key, jira.summary);
   }
 
   // Once a PR merges, the ticket drops out of every "needs action" bucket —
@@ -282,7 +287,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     <span class="item-key">${keyLabel}</span>
     <span class="badge urgency-${item.urgency}">${escapeHtml(item.urgency)}</span>
     ${metaChips}
-    ${jira ? `<span class="item-top-spacer"></span>${estimateTaskBtn(jira.key)}${startTaskBtn(jira.key)}${archiveTicketBtn(jira)}` : ''}
+    ${jira ? `<span class="item-top-spacer"></span>${estimateTaskBtn(jira.key)}${startTaskBtn(jira.key)}${archiveTicketBtn({ key: jira.key, summary: jira.summary, url: jira.url })}` : ''}
   </div>
   <div class="item-title">${escapeHtml(heading)}</div>
   ${prLinks}
@@ -354,13 +359,19 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
             // Only meaningful when the target actually is a ticket key —
             // an approval like "review this pull request" targets
             // "repo#123", not a Jira key, and Start/Estimate wouldn't mean
-            // anything there. Also suppressed for a ticket that's already
-            // merged (e.g. the log_execution_time approval that shows up
-            // right after finishing it) — nothing left to start or estimate.
-            const actionBtns =
-              isValidTicketKey(a.target) && !mergedKeys.has(a.target) ? `${estimateTaskBtn(a.target)}${startTaskBtn(a.target)}` : '';
+            // anything there. Start/Estimate are also suppressed for a
+            // ticket that's already merged (e.g. the log_execution_time
+            // approval that shows up right after finishing it) — nothing
+            // left to start or estimate — but Archive stays available
+            // regardless, same as on a ticket card.
+            const isTicket = isValidTicketKey(a.target);
+            const actionBtns = isTicket && !mergedKeys.has(a.target) ? `${estimateTaskBtn(a.target)}${startTaskBtn(a.target)}` : '';
+            const archiveBtn = isTicket
+              ? archiveTicketBtn({ key: a.target, summary: jiraSummaryByKey.get(a.target) ?? humanizeAction(a.action), url: a.targetUrl ?? jiraUrlByKey.get(a.target) ?? '' })
+              : '';
+            const rightBtns = actionBtns + archiveBtn;
             return `<div class="card risk-${a.riskLevel}">
-    <div class="approval-head"><span class="badge source">${escapeHtml(a.source)}</span><span class="badge risk-${a.riskLevel}">${escapeHtml(a.riskLevel)} risk</span>${actionBtns ? `<span class="item-top-spacer"></span>${actionBtns}` : ''}</div>
+    <div class="approval-head"><span class="badge source">${escapeHtml(a.source)}</span><span class="badge risk-${a.riskLevel}">${escapeHtml(a.riskLevel)} risk</span>${rightBtns ? `<span class="item-top-spacer"></span>${rightBtns}` : ''}</div>
     <div class="item-title">${escapeHtml(humanizeAction(a.action))}</div>
     <div class="item-sub">on ${idChip(a.target, a.targetUrl)}</div>
     <div class="item-summary">${escapeHtml(a.reasoning)}</div>
@@ -714,7 +725,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   </div>
 </div>
 
-<div class="stat-row">
+<div class="stat-row" id="stat-row">
   ${statCard(pendingApprovals.length, 'Waiting on your decision', pendingApprovals.length > 0 ? 'accent' : 'ok')}
   ${statCard(highUrgencyCount, 'High-urgency tickets', highUrgencyCount > 0 ? 'danger' : 'ok')}
   ${statCard(activeTaskCount, 'In progress (execution)', activeTaskCount > 0 ? 'warn' : 'neutral')}
@@ -724,13 +735,13 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 
 <div class="grid">
   <div class="main">
-    <div class="panel">
+    <div class="panel" id="panel-active">
       <div class="panel-head"><h2>Active work items</h2><span class="count">${displayItems.length}</span></div>
       ${displayItems.length > 0 ? searchBox('Search your tickets…') : ''}
       ${workItemSections || '<p class="empty">Nothing tracked yet — run <code>npm run cli run</code>.</p>'}
     </div>
 
-    <div class="panel">
+    <div class="panel" id="panel-recently-merged">
       <div class="panel-head"><h2>Recently merged</h2><span class="count">${recentlyMerged.length}</span></div>
       ${recentlyMerged.length > 0 ? searchBox('Search recently merged…') : ''}
       ${recentlyMergedHtml}
@@ -745,7 +756,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
       }
     </div>
 
-    <div class="panel">
+    <div class="panel" id="panel-decision">
       <div class="panel-head"><h2>Needs your decision</h2><span class="count">${pendingApprovals.length}</span></div>
       ${pendingApprovals.length > 0 ? searchBox('Search pending approvals…') : ''}
       ${approvalsHtml}
@@ -760,7 +771,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
       </details>
     </div>
 
-    <div class="panel">
+    <div class="panel" id="panel-archived">
       <div class="panel-head"><h2>Archived</h2><span class="count">${archived.length}</span></div>
       <details>
         <summary>Show ${archived.length} archived ticket${archived.length === 1 ? '' : 's'}</summary>
@@ -894,9 +905,32 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   // Archive/unarchive — purely a local dashboard flag (see /archive-ticket
   // and /unarchive-ticket in server.ts), nothing written to Jira. Icon-only,
   // so unlike the buttons above this doesn't repurpose its own label for a
-  // loading/success state — it just removes the card from view the moment
-  // the write succeeds, immediately reflecting "this shouldn't show here
-  // anymore" instead of waiting for the next refresh.
+  // loading/success state.
+  //
+  // Archiving a ticket can move it in or out of up to five different
+  // places at once (the stat counts, Active work items, Recently merged,
+  // Needs your decision, and the Archived panel itself), so patching one
+  // count by hand was never going to stay correct — the Archived panel
+  // in particular kept showing 0 until a manual reload. Instead: remove
+  // the clicked card immediately for instant feedback, then re-fetch the
+  // page in the background and swap in the freshly rendered version of
+  // every affected panel by id, so all of them end up consistent with the
+  // server's own state without a full page reload. The freshly swapped-in
+  // markup needs no new listeners — every click handler here is delegated
+  // on document, not bound per-element.
+  var ARCHIVE_AFFECTED_IDS = ['stat-row', 'panel-active', 'panel-recently-merged', 'panel-decision', 'panel-archived'];
+  function refreshArchiveAffectedPanels() {
+    fetch('/')
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        ARCHIVE_AFFECTED_IDS.forEach(function (id) {
+          var fresh = doc.getElementById(id);
+          var current = document.getElementById(id);
+          if (fresh && current) current.replaceWith(fresh);
+        });
+      });
+  }
   document.addEventListener('click', function (e) {
     var btn = e.target.closest('.archive-btn');
     if (!btn) return;
@@ -914,13 +948,8 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
           return;
         }
         var card = btn.closest('.item-row, .card');
-        if (!card) return;
-        var panel = card.closest('.panel');
-        card.remove();
-        if (panel) {
-          var countEl = panel.querySelector('.panel-head .count');
-          if (countEl) countEl.textContent = String(Math.max(0, Number(countEl.textContent) - 1));
-        }
+        if (card) card.remove();
+        refreshArchiveAffectedPanels();
       })
       .catch(function (err) {
         alert('Could not update: ' + err);
