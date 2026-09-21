@@ -172,6 +172,22 @@ export const slackSignals = pgTable('slack_signals', {
 });
 
 // ---------------------------------------------------------------------------
+// Dashboard-only ticket archive — purely a local "stop showing me this"
+// flag. Never touches Jira (no status/label/field is written there); it
+// only suppresses a ticket from the dashboard's own views until unarchived.
+// Denormalizes summary/url at archive time so the "Archived" panel can
+// render without depending on the ticket still appearing in work_items
+// (e.g. after it's since gone stale/dropped from observation).
+// ---------------------------------------------------------------------------
+
+export const archivedTickets = pgTable('archived_tickets', {
+  id: text('id').primaryKey(), // Jira issue key
+  summary: text('summary').notNull(),
+  url: text('url').notNull(),
+  archivedAt: ts('archived_at').notNull(),
+});
+
+// ---------------------------------------------------------------------------
 // Scheduling — persisted so the agent can recover after a restart
 // ---------------------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 import { desc, eq, inArray } from 'drizzle-orm';
 import { marked } from 'marked';
 import type { AnyDb } from '../db/index.js';
-import { workItems, approvals, executionTasks, slackSignals, briefings } from '../db/schema.js';
+import { workItems, approvals, executionTasks, slackSignals, briefings, archivedTickets } from '../db/schema.js';
 import type { JiraIssue, GitHubPr } from '../models/types.js';
 import { summarizeConversations } from '../agents/slackIntelligence/conversationSummary.js';
 import { timeEntriesInRange, formatMinutes } from '../agents/workLog/timeEntry.js';
@@ -63,6 +63,33 @@ function resolveConflictBtn(pr: GitHubPr): string {
     `<button type="button" class="start-task-btn resolve-conflict-btn pr-action-btn" data-endpoint="/resolve-conflict" ` +
     `data-params="${escapeHtml(params)}" title="Open a terminal and ask Claude Code to resolve this PR's merge conflict">` +
     `🔧 Resolve conflict</button>`
+  );
+}
+
+const ARCHIVE_ICON =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>';
+const UNARCHIVE_ICON =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="12" y1="16" x2="12" y2="9"></line><polyline points="9 12 12 9 15 12"></polyline></svg>';
+
+/** POSTs to /archive-ticket — a purely local, dashboard-only "stop showing
+ * me this" flag; never writes anything to Jira. Icon-only by design (no
+ * label) so it doesn't compete with the real action CTAs on the card. */
+function archiveTicketBtn(jira: JiraIssue): string {
+  const params = `key=${encodeURIComponent(jira.key)}&summary=${encodeURIComponent(jira.summary)}&url=${encodeURIComponent(jira.url)}`;
+  return (
+    `<button type="button" class="icon-btn archive-btn" data-endpoint="/archive-ticket" data-params="${escapeHtml(params)}" ` +
+    `title="Archive ${escapeHtml(jira.key)} — hide it from the dashboard until you bring it back" aria-label="Archive ${escapeHtml(jira.key)}">${ARCHIVE_ICON}</button>`
+  );
+}
+
+/** POSTs to /unarchive-ticket — brings a ticket back into the normal
+ * dashboard views on the next refresh. */
+function unarchiveTicketBtn(key: string): string {
+  const k = escapeHtml(key);
+  const params = `key=${encodeURIComponent(key)}`;
+  return (
+    `<button type="button" class="icon-btn archive-btn" data-endpoint="/unarchive-ticket" data-params="${escapeHtml(params)}" ` +
+    `title="Restore ${k} to the dashboard" aria-label="Restore ${k}">${UNARCHIVE_ICON}</button>`
   );
 }
 
@@ -151,7 +178,7 @@ function searchBox(placeholder: string): string {
 
 export async function renderDashboard(db: AnyDb): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
-  const [items, pendingApprovals, resolvedApprovals, tasks, signals, latestBriefing, todayEntries] = await Promise.all([
+  const [rawItems, rawPendingApprovals, resolvedApprovals, tasks, signals, latestBriefing, todayEntries, archived] = await Promise.all([
     db.select().from(workItems).orderBy(desc(workItems.updatedAt)).limit(100),
     db.select().from(approvals).where(eq(approvals.status, 'pending')).orderBy(desc(approvals.createdAt)),
     db.select().from(approvals).where(inArray(approvals.status, ['approved', 'rejected'])).orderBy(desc(approvals.resolvedAt)).limit(30),
@@ -159,16 +186,29 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     db.select().from(slackSignals).orderBy(desc(slackSignals.createdAt)).limit(200),
     db.select().from(briefings).where(eq(briefings.kind, 'daily')).orderBy(desc(briefings.id)).limit(1),
     timeEntriesInRange(db, today, today),
+    db.select().from(archivedTickets).orderBy(desc(archivedTickets.archivedAt)),
   ]);
 
   const briefing = latestBriefing[0];
   const briefingHtml = briefing ? await marked.parse(briefing.content) : null;
 
+  // A purely local "stop showing me this" flag — never written to Jira.
+  // Filtered out here, upstream of every other computation below, so it
+  // cascades through Active work items, Recently merged, the high-urgency
+  // count, and pending approvals alike: an archived ticket disappears from
+  // all of them until unarchived, not just the one list it was clicked from.
+  const archivedKeys = new Set(archived.map((a) => a.id));
+  const items = rawItems.filter((item) => {
+    const jira = item.jira as JiraIssue | null;
+    return !jira || !archivedKeys.has(jira.key);
+  });
+  const pendingApprovals = rawPendingApprovals.filter((a) => !archivedKeys.has(a.target));
+
   // So Slack signals / execution tasks (which only store a bare Jira key)
   // can still link out to the ticket, using whatever URL observation
   // already captured for that key.
   const jiraUrlByKey = new Map<string, string>();
-  for (const item of items) {
+  for (const item of rawItems) {
     const jira = item.jira as JiraIssue | null;
     if (jira?.key && jira.url) jiraUrlByKey.set(jira.key, jira.url);
   }
@@ -242,7 +282,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     <span class="item-key">${keyLabel}</span>
     <span class="badge urgency-${item.urgency}">${escapeHtml(item.urgency)}</span>
     ${metaChips}
-    ${jira ? `<span class="item-top-spacer"></span>${estimateTaskBtn(jira.key)}${startTaskBtn(jira.key)}` : ''}
+    ${jira ? `<span class="item-top-spacer"></span>${estimateTaskBtn(jira.key)}${startTaskBtn(jira.key)}${archiveTicketBtn(jira)}` : ''}
   </div>
   <div class="item-title">${escapeHtml(heading)}</div>
   ${prLinks}
@@ -343,6 +383,19 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     <div class="item-sub">on ${idChip(a.target, a.targetUrl)}${when ? ` — ${escapeHtml(when)}` : ''}</div>
   </div>`;
           })
+          .join('\n');
+
+  const archivedHtml =
+    archived.length === 0
+      ? '<p class="empty">Nothing archived.</p>'
+      : archived
+          .map(
+            (a) => `<div class="card compact">
+  <div class="approval-head"><span class="item-title">${idChip(a.id, a.url)}</span><span class="item-top-spacer"></span>${unarchiveTicketBtn(a.id)}</div>
+  <div class="item-summary">${escapeHtml(a.summary)}</div>
+  <div class="item-sub">Archived ${escapeHtml(new Date(a.archivedAt).toLocaleDateString())}</div>
+</div>`,
+          )
           .join('\n');
 
   const tasksHtml =
@@ -507,6 +560,15 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   .estimate-task-btn:disabled { background: var(--surface); color: var(--muted); }
   .resolve-conflict-btn { background: var(--high-wash); color: var(--high); border-color: var(--high); }
   .resolve-conflict-btn:hover { background: var(--high); color: var(--surface); }
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 1.9rem; height: 1.9rem; padding: 0; flex: none;
+    background: var(--surface); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 6px; cursor: pointer; vertical-align: middle;
+  }
+  .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+  .icon-btn:disabled { opacity: 0.5; cursor: default; }
+  .archive-btn:hover { color: var(--high); border-color: var(--high); }
   .item-key { font-family: var(--mono); font-size: 0.8rem; font-weight: 600; color: var(--muted); }
   .item-key a { color: var(--muted); }
   .chip { display: inline-block; font-size: 0.66rem; background: var(--surface); border: 1px solid var(--border); color: var(--muted); padding: 0.1rem 0.45rem; border-radius: 8px; white-space: nowrap; }
@@ -697,6 +759,15 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
         ${approvalHistoryHtml}
       </details>
     </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Archived</h2><span class="count">${archived.length}</span></div>
+      <details>
+        <summary>Show ${archived.length} archived ticket${archived.length === 1 ? '' : 's'}</summary>
+        ${archived.length > 0 ? searchBox('Search archived…') : ''}
+        ${archivedHtml}
+      </details>
+    </div>
   </div>
 
   <div class="side">
@@ -816,6 +887,43 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
       .catch(function (err) {
         alert('Could not open a session: ' + err);
         btn.textContent = original;
+        btn.disabled = false;
+      });
+  });
+
+  // Archive/unarchive — purely a local dashboard flag (see /archive-ticket
+  // and /unarchive-ticket in server.ts), nothing written to Jira. Icon-only,
+  // so unlike the buttons above this doesn't repurpose its own label for a
+  // loading/success state — it just removes the card from view the moment
+  // the write succeeds, immediately reflecting "this shouldn't show here
+  // anymore" instead of waiting for the next refresh.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.archive-btn');
+    if (!btn) return;
+    var endpoint = btn.getAttribute('data-endpoint') || '';
+    var params = btn.getAttribute('data-params') || '';
+    btn.disabled = true;
+    fetch(endpoint + '?' + params, { method: 'POST' })
+      .then(function (r) {
+        return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          alert('Could not update: ' + (result.data && result.data.error ? result.data.error : 'unknown error'));
+          btn.disabled = false;
+          return;
+        }
+        var card = btn.closest('.item-row, .card');
+        if (!card) return;
+        var panel = card.closest('.panel');
+        card.remove();
+        if (panel) {
+          var countEl = panel.querySelector('.panel-head .count');
+          if (countEl) countEl.textContent = String(Math.max(0, Number(countEl.textContent) - 1));
+        }
+      })
+      .catch(function (err) {
+        alert('Could not update: ' + err);
         btn.disabled = false;
       });
   });

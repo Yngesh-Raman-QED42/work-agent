@@ -15,6 +15,13 @@
       "when": 1789160117291,
       "tag": "0001_mixed_beyonder",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789999937665,
+      "tag": "0002_redundant_wilson_fisk",
+      "breakpoints": true
     }
   ]
 }

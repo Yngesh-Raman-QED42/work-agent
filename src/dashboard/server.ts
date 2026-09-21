@@ -2,6 +2,8 @@ import 'dotenv/config';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import { getDb } from '../db/index.js';
+import { archivedTickets } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
 import { loadConfig } from '../config/index.js';
 import { buildConnectors } from '../integrations/factory.js';
 import { runPipeline } from '../pipeline/run.js';
@@ -225,6 +227,41 @@ async function handleTicketDescription(req: IncomingMessage, res: ServerResponse
   }
 }
 
+/**
+ * A purely local "stop showing me this" flag — never writes anything to
+ * Jira. See render.ts: any ticket in archived_tickets is filtered out of
+ * every dashboard view (Active work items, Recently merged, pending
+ * approvals) until it's unarchived, and that filter is re-applied on every
+ * render, so it survives a restart/refresh rather than just hiding
+ * something client-side until the next reload.
+ */
+async function handleArchiveTicket(res: ServerResponse, url: URL): Promise<void> {
+  const key = url.searchParams.get('key') ?? '';
+  const summary = url.searchParams.get('summary') ?? '';
+  const ticketUrl = url.searchParams.get('url') ?? '';
+  if (!isValidTicketKey(key)) return sendJson(res, 400, { error: `not a valid ticket key: ${key}` });
+  try {
+    await db
+      .insert(archivedTickets)
+      .values({ id: key, summary, url: ticketUrl, archivedAt: new Date() })
+      .onConflictDoUpdate({ target: archivedTickets.id, set: { summary, url: ticketUrl, archivedAt: new Date() } });
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    sendJson(res, 502, { error: String(err) });
+  }
+}
+
+async function handleUnarchiveTicket(res: ServerResponse, url: URL): Promise<void> {
+  const key = url.searchParams.get('key') ?? '';
+  if (!isValidTicketKey(key)) return sendJson(res, 400, { error: `not a valid ticket key: ${key}` });
+  try {
+    await db.delete(archivedTickets).where(eq(archivedTickets.id, key));
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    sendJson(res, 502, { error: String(err) });
+  }
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
 
@@ -265,6 +302,14 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === 'POST' && url.pathname === '/ticket-description') {
     await handleTicketDescription(req, res, url);
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/archive-ticket') {
+    await handleArchiveTicket(res, url);
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/unarchive-ticket') {
+    await handleUnarchiveTicket(res, url);
     return;
   }
 

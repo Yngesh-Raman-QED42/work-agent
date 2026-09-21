@@ -2,7 +2,7 @@ import { describe, expect, it, afterEach } from 'vitest';
 import { createTestDb, type TestDbHandle } from '../../src/test-utils/db.js';
 import { renderDashboard } from '../../src/dashboard/render.js';
 import { ApprovalsStore } from '../../src/shared/approvals.js';
-import { slackSignals, workItems } from '../../src/db/schema.js';
+import { slackSignals, workItems, archivedTickets } from '../../src/db/schema.js';
 
 let handle: TestDbHandle | null = null;
 afterEach(async () => {
@@ -333,6 +333,82 @@ describe('renderDashboard', () => {
     const html = await renderDashboard(handle.db);
     expect(html).not.toContain('data-key="PROJ-4" data-action="work"');
     expect(html).not.toContain('data-key="PROJ-4" data-action="estimate"');
+  });
+
+  it('puts an icon-only archive button on a ticket card', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(workItems).values({
+      id: 'PROJ-20',
+      category: 'needs_action',
+      urgency: 'medium',
+      jiraKey: 'PROJ-20',
+      jira: { key: 'PROJ-20', project: 'PROJ', summary: 'Not going anywhere', status: 'In Progress', statusCategory: 'In Progress', priority: 'Medium', updated: now.toISOString(), url: 'http://x/PROJ-20' },
+      prs: [],
+      slackMessages: [],
+      reasons: [],
+      firstSeenAt: now,
+      updatedAt: now,
+    });
+    const html = await renderDashboard(handle.db);
+    expect(html).toContain('data-endpoint="/archive-ticket"');
+    expect(html).toContain('key=PROJ-20&amp;summary=Not%20going%20anywhere&amp;url=http%3A%2F%2Fx%2FPROJ-20');
+    // Icon-only — no visible label text inside the button.
+    expect(html).toMatch(/<button[^>]*class="icon-btn archive-btn"[^>]*>\s*<svg/);
+  });
+
+  it('an archived ticket is hidden from Active work items and pending approvals, and survives a fresh render (simulating a restart)', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(workItems).values({
+      id: 'PROJ-21',
+      category: 'needs_action',
+      urgency: 'medium',
+      jiraKey: 'PROJ-21',
+      jira: { key: 'PROJ-21', project: 'PROJ', summary: 'Just tracking this, no real end goal', status: 'In Progress', statusCategory: 'In Progress', priority: 'Medium', updated: now.toISOString(), url: 'http://x/PROJ-21' },
+      prs: [],
+      slackMessages: [],
+      reasons: [],
+      firstSeenAt: now,
+      updatedAt: now,
+    });
+    await new ApprovalsStore(handle.db).file({
+      id: 'create-branch:PROJ-21', source: 'task_intelligence', action: 'create_branch_or_pr', target: 'PROJ-21',
+      context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
+    });
+    await handle.db.insert(archivedTickets).values({
+      id: 'PROJ-21', summary: 'Just tracking this, no real end goal', url: 'http://x/PROJ-21', archivedAt: now,
+    });
+
+    // Two separate renders — nothing in-memory carries state between them,
+    // so this stands in for "still gone after a dashboard restart."
+    const html1 = await renderDashboard(handle.db);
+    const html2 = await renderDashboard(handle.db);
+    for (const html of [html1, html2]) {
+      // It's still listed in the Archived panel (checked below) — what
+      // must be gone is its row in Active work items specifically, which
+      // is the only place that carries this data attribute.
+      expect(html).not.toContain('data-ticket-key="PROJ-21"');
+      expect(html).toContain('<h2>Active work items</h2><span class="count">0</span>');
+      expect(html).toContain('<h2>Needs your decision</h2><span class="count">0</span>');
+      // ...but it's listed in the Archived panel, with a restore control.
+      expect(html).toContain('<h2>Archived</h2><span class="count">1</span>');
+      expect(html).toContain('data-endpoint="/unarchive-ticket"');
+      expect(html).toContain('key=PROJ-21');
+    }
+  });
+
+  it('the Archived panel is collapsed by default', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(archivedTickets).values({ id: 'PROJ-22', summary: 'Old noise', url: 'http://x/PROJ-22', archivedAt: now });
+    const html = await renderDashboard(handle.db);
+    const archivedPanelIdx = html.indexOf('<h2>Archived</h2>');
+    // The <details> right after the Archived panel heading has no "open"
+    // attribute — collapsed unless the person expands it themselves.
+    const snippet = html.slice(archivedPanelIdx, archivedPanelIdx + 200);
+    expect(snippet).toContain('<details>');
+    expect(snippet).not.toContain('<details open>');
   });
 
   it('does not list a PR merged more than 7 days ago under "Recently merged"', async () => {
