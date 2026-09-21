@@ -52,6 +52,20 @@ function estimateTaskBtn(key: string): string {
   return `<button type="button" class="start-task-btn estimate-task-btn" data-key="${k}" data-action="estimate" title="Open a terminal and ask Claude Code for a time estimate on ${k}">⏱ Estimate</button>`;
 }
 
+/** POSTs to /resolve-conflict — a standalone PR card (no matching Jira
+ * ticket) isn't a "task," so it doesn't get Start/Estimate; a merge
+ * conflict is the one thing on it that's unambiguously actionable. */
+function resolveConflictBtn(pr: GitHubPr): string {
+  const params =
+    `repo=${encodeURIComponent(pr.repo)}&number=${pr.number}` +
+    `&title=${encodeURIComponent(pr.title)}&branch=${encodeURIComponent(pr.branch)}`;
+  return (
+    `<button type="button" class="start-task-btn resolve-conflict-btn pr-action-btn" data-endpoint="/resolve-conflict" ` +
+    `data-params="${escapeHtml(params)}" title="Open a terminal and ask Claude Code to resolve this PR's merge conflict">` +
+    `🔧 Resolve conflict</button>`
+  );
+}
+
 /** The one place a ticket/PR id is ever rendered — a link (when a URL is
  * known) plus a copy icon, always together, so "copy this id" works
  * identically everywhere it appears. */
@@ -212,12 +226,12 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
           ? `<span class="chip">${escapeHtml(jira.status)}</span><span class="chip">${escapeHtml(jira.priority)} priority</span><span class="chip">${escapeHtml(jira.project)}</span>`
           : '';
         const prLinks = prs
-          .map(
-            (pr) =>
-              `<div class="pr-link">Linked PR: ${idChip(`${pr.repo}#${pr.number}`, pr.url)} — ${escapeHtml(pr.title)}` +
-              (pr.hasConflicts ? '<span class="badge urgency-high">⚠ Merge conflicts</span>' : '') +
-              `</div>`,
-          )
+          .map((pr) => {
+            const conflictRow = pr.hasConflicts
+              ? `<div class="pr-conflict-row"><span class="badge urgency-high">⚠ Merge conflicts</span>${resolveConflictBtn(pr)}</div>`
+              : '';
+            return `<div class="pr-link">Linked PR: ${idChip(`${pr.repo}#${pr.number}`, pr.url)} — ${escapeHtml(pr.title)}</div>${conflictRow}`;
+          })
           .join('');
         const reasons = (item.reasons as string[]).map((r) => `<li>${escapeHtml(r)}</li>`).join('');
         // Only tickets with a real Jira key open the detail dialog — a
@@ -474,6 +488,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   .item-sub { color: var(--muted); font-size: 0.8rem; margin-top: 0.15rem; }
   .item-summary { color: var(--muted); font-size: 0.83rem; margin-top: 0.2rem; }
   .pr-link { font-size: 0.78rem; color: var(--muted); margin-top: 0.3rem; }
+  .pr-conflict-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.3rem; }
   .reasons-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); margin-top: 0.5rem; }
   .reasons { margin: 0.2rem 0 0; padding-left: 1.1rem; font-size: 0.78rem; color: var(--muted); }
 
@@ -490,6 +505,8 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   .estimate-task-btn { background: var(--surface); color: var(--muted); border-color: var(--border); }
   .estimate-task-btn:hover { background: var(--surface-2); color: var(--text); }
   .estimate-task-btn:disabled { background: var(--surface); color: var(--muted); }
+  .resolve-conflict-btn { background: var(--high-wash); color: var(--high); border-color: var(--high); }
+  .resolve-conflict-btn:hover { background: var(--high); color: var(--surface); }
   .item-key { font-family: var(--mono); font-size: 0.8rem; font-weight: 600; color: var(--muted); }
   .item-key a { color: var(--muted); }
   .chip { display: inline-block; font-size: 0.66rem; background: var(--surface); border: 1px solid var(--border); color: var(--muted); padding: 0.1rem 0.45rem; border-radius: 8px; white-space: nowrap; }
@@ -736,6 +753,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   document.addEventListener('click', function (e) {
     var btn = e.target.closest('.start-task-btn');
     if (!btn) return;
+    if (btn.classList.contains('pr-action-btn')) return; // handled separately below
     var key = btn.getAttribute('data-key') || '';
     var action = btn.getAttribute('data-action') || 'work';
     var endpoint = action === 'estimate' ? '/estimate-task' : '/start-task';
@@ -749,6 +767,42 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
       .then(function (result) {
         if (result.ok) {
           btn.textContent = action === 'estimate' ? 'Opened ✓' : 'Started ✓';
+          setTimeout(function () {
+            btn.textContent = original;
+            btn.disabled = false;
+          }, 4000);
+        } else {
+          alert('Could not open a session: ' + (result.data && result.data.error ? result.data.error : 'unknown error'));
+          btn.textContent = original;
+          btn.disabled = false;
+        }
+      })
+      .catch(function (err) {
+        alert('Could not open a session: ' + err);
+        btn.textContent = original;
+        btn.disabled = false;
+      });
+  });
+
+  // "Resolve conflict" — same real-terminal mechanism as Start/Estimate
+  // above, but keyed by a PR reference (repo/number/title/branch, packed
+  // into data-params) instead of a ticket key, since a standalone PR card
+  // has no ticket behind it.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.pr-action-btn');
+    if (!btn) return;
+    var endpoint = btn.getAttribute('data-endpoint') || '';
+    var params = btn.getAttribute('data-params') || '';
+    var original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Opening…';
+    fetch(endpoint + '?' + params, { method: 'POST' })
+      .then(function (r) {
+        return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+      })
+      .then(function (result) {
+        if (result.ok) {
+          btn.textContent = 'Opened ✓';
           setTimeout(function () {
             btn.textContent = original;
             btn.disabled = false;

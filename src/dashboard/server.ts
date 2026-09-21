@@ -7,7 +7,7 @@ import { buildConnectors } from '../integrations/factory.js';
 import { runPipeline } from '../pipeline/run.js';
 import { runSlackIntelligence } from '../agents/slackIntelligence/runbook.js';
 import { renderDashboard } from './render.js';
-import { buildLaunchCommand, isValidTicketKey, type SessionAction } from './launchSession.js';
+import { buildLaunchCommand, buildResolveConflictCommand, isValidTicketKey, type SessionAction } from './launchSession.js';
 import { LiveJiraFullDetailReader } from '../integrations/jira/issueFullDetail.js';
 import { LiveJiraIssueUpdater } from '../integrations/jira/issueUpdater.js';
 import { LiveJiraWorklogWriter } from '../integrations/jira/worklogWriter.js';
@@ -59,6 +59,27 @@ function launchSessionForTicket(res: ServerResponse, url: URL, action: SessionAc
     const { bin, args } = buildLaunchCommand(config.dashboard.terminalOs, WORK_AGENT_DIR, key, action);
     const child = spawn(bin, args, { detached: true, stdio: 'ignore' });
     child.unref(); // don't keep the dashboard process alive waiting on the terminal
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true }));
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: String(err) }));
+  }
+}
+
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+function launchResolveConflict(res: ServerResponse, url: URL): void {
+  const repo = url.searchParams.get('repo') ?? '';
+  const number = Number(url.searchParams.get('number'));
+  const title = url.searchParams.get('title') ?? '';
+  const branch = url.searchParams.get('branch') ?? '';
+  if (!REPO_RE.test(repo) || !Number.isInteger(number) || number <= 0) {
+    res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: `not a valid PR reference: ${repo}#${number}` }));
+    return;
+  }
+  try {
+    const { bin, args } = buildResolveConflictCommand(config.dashboard.terminalOs, WORK_AGENT_DIR, { repo, number, title, branch });
+    const child = spawn(bin, args, { detached: true, stdio: 'ignore' });
+    child.unref();
     res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true }));
   } catch (err) {
     res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: String(err) }));
@@ -218,6 +239,11 @@ const server = createServer(async (req, res) => {
   // deferred until the estimation itself is proven good.
   if (req.method === 'POST' && url.pathname === '/estimate-task') {
     launchSessionForTicket(res, url, 'estimate');
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/resolve-conflict') {
+    launchResolveConflict(res, url);
     return;
   }
 

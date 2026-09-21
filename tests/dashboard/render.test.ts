@@ -155,11 +155,17 @@ describe('renderDashboard', () => {
       updatedAt: now,
     });
     const html = await renderDashboard(handle.db);
-    // The conflicting PR's own title is immediately followed by the badge...
-    expect(html).toContain('— PROJ-10: fix<span class="badge urgency-high">⚠ Merge conflicts</span></div>');
-    // ...but the clean PR's title is immediately followed by the closing
-    // div instead, with no badge in between.
+    // The conflicting PR's own line ends cleanly...
+    expect(html).toContain('— PROJ-10: fix</div>');
+    // ...followed by its own conflict row: the badge and a "Resolve
+    // conflict" button referencing that exact PR.
+    expect(html).toContain('<div class="pr-conflict-row"><span class="badge urgency-high">⚠ Merge conflicts</span>');
+    expect(html).toContain('data-endpoint="/resolve-conflict"');
+    // & is HTML-escaped to &amp; within the attribute value.
+    expect(html).toContain('repo=org%2Frepo&amp;number=70&amp;title=PROJ-10%3A%20fix&amp;branch=feat%2Fproj-10');
+    // The clean PR gets neither the badge nor the button.
     expect(html).toContain('— PROJ-11: fix</div>');
+    expect(html).not.toContain('org%2Frepo&number=71');
   });
 
   it('groups multiple Slack messages from one conversation into a single headline, raw text hidden by default', async () => {

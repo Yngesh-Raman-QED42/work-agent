@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLaunchCommand, isValidTicketKey } from '../../src/dashboard/launchSession.js';
+import { buildLaunchCommand, buildResolveConflictCommand, isValidTicketKey } from '../../src/dashboard/launchSession.js';
 
 describe('isValidTicketKey', () => {
   it('accepts real Jira issue key shapes', () => {
@@ -78,5 +78,37 @@ describe('buildLaunchCommand', () => {
 
   it('"estimate" action still validates the ticket key before building anything', () => {
     expect(() => buildLaunchCommand('ubuntu', '/x', 'not a key', 'estimate')).toThrow(/malformed/);
+  });
+});
+
+describe('buildResolveConflictCommand', () => {
+  const pr = { repo: 'org/repo', number: 56, title: 'feat(sync): add a thing', branch: 'feat/thing' };
+
+  it('ubuntu: opens gnome-terminal with a prompt naming the exact PR, its branch, and never to merge it', () => {
+    const { bin, args } = buildResolveConflictCommand('ubuntu', '/home/me/work-agent', pr);
+    expect(bin).toBe('gnome-terminal');
+    const inner = args.join(' ');
+    expect(inner).toContain("cd '/home/me/work-agent'");
+    expect(inner).toContain('resolve the merge conflict on PR org/repo#56');
+    expect(inner).toContain('feat(sync): add a thing');
+    expect(inner).toContain('branch feat/thing');
+    expect(inner).toMatch(/Do not merge the PR itself/);
+  });
+
+  it('mac and windows build the same prompt through their own terminal mechanics', () => {
+    const mac = buildResolveConflictCommand('mac', '/Users/me/work-agent', pr);
+    expect(mac.bin).toBe('osascript');
+    expect(mac.args.join(' ')).toContain('resolve the merge conflict on PR org/repo#56');
+
+    const win = buildResolveConflictCommand('windows', 'C:\\Users\\me\\work-agent', pr);
+    expect(win.bin).toBe('cmd.exe');
+    expect(win.args.join(' ')).toContain('resolve the merge conflict on PR org/repo#56');
+  });
+
+  it('refuses a malformed repo or a non-positive PR number', () => {
+    expect(() => buildResolveConflictCommand('ubuntu', '/x', { ...pr, repo: 'not-a-repo' })).toThrow(/malformed/);
+    expect(() => buildResolveConflictCommand('ubuntu', '/x', { ...pr, repo: "org/repo'; rm -rf ~; '" })).toThrow(/malformed/);
+    expect(() => buildResolveConflictCommand('ubuntu', '/x', { ...pr, number: 0 })).toThrow(/malformed/);
+    expect(() => buildResolveConflictCommand('ubuntu', '/x', { ...pr, number: -1 })).toThrow(/malformed/);
   });
 });

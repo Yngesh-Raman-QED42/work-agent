@@ -54,18 +54,10 @@ function appleScriptQuote(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-/**
- * Builds the command to open a terminal, cd into `workAgentDir`, and run
- * `claude "<prompt for this action and ticket>"` — Claude Code's CLI
- * accepts an initial prompt as an argument, so the session opens already
- * primed with the instruction rather than sitting empty waiting for it.
- */
-export function buildLaunchCommand(os: TerminalOs, workAgentDir: string, ticketKey: string, action: SessionAction = 'work'): LaunchCommand {
-  if (!isValidTicketKey(ticketKey)) {
-    throw new Error(`refusing to build a launch command for a malformed ticket key: ${ticketKey}`);
-  }
-  const prompt = ACTION_PROMPTS[action](ticketKey);
-
+/** Shared by every "open a terminal with this exact prompt" builder below —
+ * the OS-specific mechanics are identical regardless of what's being asked;
+ * only the prompt text differs. */
+function buildCommandForPrompt(os: TerminalOs, workAgentDir: string, prompt: string): LaunchCommand {
   switch (os) {
     case 'mac': {
       const shellCmd = `cd ${shQuote(workAgentDir)} && claude ${shQuote(prompt)}`;
@@ -88,4 +80,47 @@ export function buildLaunchCommand(os: TerminalOs, workAgentDir: string, ticketK
       return { bin: 'gnome-terminal', args: ['--', 'bash', '-c', inner] };
     }
   }
+}
+
+/**
+ * Builds the command to open a terminal, cd into `workAgentDir`, and run
+ * `claude "<prompt for this action and ticket>"` — Claude Code's CLI
+ * accepts an initial prompt as an argument, so the session opens already
+ * primed with the instruction rather than sitting empty waiting for it.
+ */
+export function buildLaunchCommand(os: TerminalOs, workAgentDir: string, ticketKey: string, action: SessionAction = 'work'): LaunchCommand {
+  if (!isValidTicketKey(ticketKey)) {
+    throw new Error(`refusing to build a launch command for a malformed ticket key: ${ticketKey}`);
+  }
+  return buildCommandForPrompt(os, workAgentDir, ACTION_PROMPTS[action](ticketKey));
+}
+
+// "owner/repo" only — this gets embedded into a shell/AppleScript/cmd
+// command string below, same reasoning as TICKET_KEY_RE.
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+export interface ConflictedPrRef {
+  repo: string;
+  number: number;
+  title: string;
+  branch: string;
+}
+
+/**
+ * A standalone open PR (no matching Jira ticket — see correlate.ts) isn't
+ * a "task" the way a ticket is, so it doesn't get the general work/estimate
+ * treatment. A merge conflict is the one thing on a PR card that's
+ * unambiguously actionable and PR-specific, so it gets its own narrow
+ * command instead of being folded into buildLaunchCommand's ticket-shaped
+ * prompts.
+ */
+export function buildResolveConflictCommand(os: TerminalOs, workAgentDir: string, pr: ConflictedPrRef): LaunchCommand {
+  if (!REPO_RE.test(pr.repo) || !Number.isInteger(pr.number) || pr.number <= 0) {
+    throw new Error(`refusing to build a launch command for a malformed PR reference: ${pr.repo}#${pr.number}`);
+  }
+  const prompt =
+    `resolve the merge conflict on PR ${pr.repo}#${pr.number} — ${pr.title} (branch ${pr.branch}). ` +
+    `Check out its branch, merge in the latest base branch, resolve the conflicts, verify the repo's ` +
+    `own tests/lint/build still pass, then push the fix to the same branch. Do not merge the PR itself.`;
+  return buildCommandForPrompt(os, workAgentDir, prompt);
 }
