@@ -115,6 +115,53 @@ describe('renderDashboard', () => {
     expect(html).toContain('Medium priority');
   });
 
+  it('shows a merge-conflicts badge next to a PR that has one, and none for a clean PR', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(workItems).values({
+      id: 'PROJ-10',
+      category: 'needs_action',
+      urgency: 'high',
+      jiraKey: 'PROJ-10',
+      jira: { key: 'PROJ-10', project: 'PROJ', summary: 'Has a conflicting PR', status: 'In Progress', statusCategory: 'In Progress', priority: 'Medium', updated: now.toISOString(), url: 'http://x/PROJ-10' },
+      prs: [
+        {
+          repo: 'org/repo', number: 70, title: 'PROJ-10: fix', url: 'http://x/pr/70',
+          state: 'open', isDraft: false, branch: 'feat/proj-10', isAuthor: true,
+          reviewRequestedOfMe: false, reviewState: 'none', updatedAt: now.toISOString(), hasConflicts: true,
+        },
+      ],
+      slackMessages: [],
+      reasons: ['Your PR org/repo#70 has merge conflicts that need resolving'],
+      firstSeenAt: now,
+      updatedAt: now,
+    });
+    await handle.db.insert(workItems).values({
+      id: 'PROJ-11',
+      category: 'waiting_on_others',
+      urgency: 'medium',
+      jiraKey: 'PROJ-11',
+      jira: { key: 'PROJ-11', project: 'PROJ', summary: 'Clean PR', status: 'In Progress', statusCategory: 'In Progress', priority: 'Medium', updated: now.toISOString(), url: 'http://x/PROJ-11' },
+      prs: [
+        {
+          repo: 'org/repo', number: 71, title: 'PROJ-11: fix', url: 'http://x/pr/71',
+          state: 'open', isDraft: false, branch: 'feat/proj-11', isAuthor: true,
+          reviewRequestedOfMe: false, reviewState: 'none', updatedAt: now.toISOString(), hasConflicts: false,
+        },
+      ],
+      slackMessages: [],
+      reasons: [],
+      firstSeenAt: now,
+      updatedAt: now,
+    });
+    const html = await renderDashboard(handle.db);
+    // The conflicting PR's own title is immediately followed by the badge...
+    expect(html).toContain('— PROJ-10: fix<span class="badge urgency-high">⚠ Merge conflicts</span></div>');
+    // ...but the clean PR's title is immediately followed by the closing
+    // div instead, with no badge in between.
+    expect(html).toContain('— PROJ-11: fix</div>');
+  });
+
   it('groups multiple Slack messages from one conversation into a single headline, raw text hidden by default', async () => {
     handle = await createTestDb();
     const now = new Date();

@@ -104,33 +104,50 @@ export class LiveGitHubConnector implements GitHubConnector {
       return false;
     });
 
-    // Fetch the branch name with one follow-up `gh pr view` call per result
-    // (only for the ones we're keeping) — `gh search prs --json` doesn't
-    // support `headRefName` at all; only `gh pr view`/`gh pr list` do.
+    // Fetch the branch name (and, for an open PR, its real mergeable
+    // status) with one follow-up `gh pr view` call per result (only for
+    // the ones we're keeping) — `gh search prs --json` doesn't support
+    // `headRefName`/`mergeable` at all; only `gh pr view`/`gh pr list` do.
     return Promise.all(
-      relevant.map(async (item) => ({
-        repo: item.repository.nameWithOwner,
-        number: item.number,
-        title: item.title,
-        url: item.url,
-        state: item.state.toLowerCase() as 'open' | 'merged',
-        isDraft: item.isDraft,
-        branch: await this.fetchBranch(item.repository.nameWithOwner, item.number),
-        isAuthor: false,
-        reviewRequestedOfMe: false,
-        reviewState: 'none' as const,
-        updatedAt: item.updatedAt,
-        closedAt: item.closedAt ?? undefined,
-      })),
+      relevant.map(async (item) => {
+        const state = item.state.toLowerCase() as 'open' | 'merged';
+        const details = await this.fetchDetails(item.repository.nameWithOwner, item.number);
+        return {
+          repo: item.repository.nameWithOwner,
+          number: item.number,
+          title: item.title,
+          url: item.url,
+          state,
+          isDraft: item.isDraft,
+          branch: details.branch,
+          isAuthor: false,
+          reviewRequestedOfMe: false,
+          reviewState: 'none' as const,
+          updatedAt: item.updatedAt,
+          // gh search prs returns the Go zero-value "0001-01-01T00:00:00Z"
+          // for closedAt on a PR that's still open, not null/absent —
+          // confirmed directly against real open PRs. Only ever meaningful
+          // for a PR that's actually merged/closed; recording it for an
+          // open PR would make it look closed to anything checking
+          // truthiness (e.g. the dashboard's "Recently merged" filter).
+          closedAt: state === 'merged' ? (item.closedAt ?? undefined) : undefined,
+          hasConflicts: state === 'open' ? details.mergeable === 'CONFLICTING' : undefined,
+        };
+      }),
     );
   }
 
-  private async fetchBranch(repo: string, number: number): Promise<string> {
+  private async fetchDetails(repo: string, number: number): Promise<{ branch: string; mergeable: string }> {
     try {
-      const { stdout } = await execFileAsync('gh', ['pr', 'view', String(number), '--repo', repo, '--json', 'headRefName']);
-      return (JSON.parse(stdout) as { headRefName: string }).headRefName;
+      const { stdout } = await execFileAsync('gh', [
+        'pr', 'view', String(number), '--repo', repo, '--json', 'headRefName,mergeable',
+      ]);
+      const data = JSON.parse(stdout) as { headRefName: string; mergeable: string };
+      return { branch: data.headRefName, mergeable: data.mergeable };
     } catch {
-      return ''; // non-fatal — branch is used for Jira-key extraction, not required for anything else
+      // non-fatal — branch is used for Jira-key extraction and mergeable
+      // for the conflict badge, neither required for anything else.
+      return { branch: '', mergeable: 'UNKNOWN' };
     }
   }
 }

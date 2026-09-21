@@ -18,6 +18,15 @@ export function classify(item: WorkItem): WorkItem {
       category = 'needs_action';
       urgency = 'high';
       reasons.push(`Changes requested on your PR ${pr.repo}#${pr.number}`);
+    } else if (pr.isAuthor && pr.state === 'open' && pr.hasConflicts) {
+      // A merge conflict needs YOUR action specifically (rebase/resolve),
+      // not the reviewer's — this must never sit quietly in the generic
+      // "waiting_on_others" bucket the branch below would otherwise put it
+      // in, where a real live.ts bug (fixed alongside this) meant it had
+      // no visible signal anywhere on the dashboard at all.
+      category = 'needs_action';
+      urgency = 'high';
+      reasons.push(`Your PR ${pr.repo}#${pr.number} has merge conflicts that need resolving`);
     } else if (pr.isAuthor && pr.state === 'open' && category === 'fyi') {
       category = 'waiting_on_others';
       urgency = 'medium';

@@ -59,6 +59,14 @@ describe('classify', () => {
     expect(item.urgency).toBe('medium');
   });
 
+  it('own open PR with merge conflicts -> needs_action / high, not waiting_on_others — a conflict needs YOUR action', () => {
+    const item = makeItem({ prs: [makePr({ isAuthor: true, reviewState: 'none', hasConflicts: true })] });
+    classify(item);
+    expect(item.category).toBe('needs_action');
+    expect(item.urgency).toBe('high');
+    expect(item.reasons.some((r) => r.includes('merge conflicts'))).toBe(true);
+  });
+
   it('on hold issue -> blocked', () => {
     const item = makeItem({ jira: makeIssue({ status: 'On Hold' }) });
     classify(item);

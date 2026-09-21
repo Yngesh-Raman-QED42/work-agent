@@ -212,7 +212,12 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
           ? `<span class="chip">${escapeHtml(jira.status)}</span><span class="chip">${escapeHtml(jira.priority)} priority</span><span class="chip">${escapeHtml(jira.project)}</span>`
           : '';
         const prLinks = prs
-          .map((pr) => `<div class="pr-link">Linked PR: ${idChip(`${pr.repo}#${pr.number}`, pr.url)} — ${escapeHtml(pr.title)}</div>`)
+          .map(
+            (pr) =>
+              `<div class="pr-link">Linked PR: ${idChip(`${pr.repo}#${pr.number}`, pr.url)} — ${escapeHtml(pr.title)}` +
+              (pr.hasConflicts ? '<span class="badge urgency-high">⚠ Merge conflicts</span>' : '') +
+              `</div>`,
+          )
           .join('');
         const reasons = (item.reasons as string[]).map((r) => `<li>${escapeHtml(r)}</li>`).join('');
         // Only tickets with a real Jira key open the detail dialog — a

@@ -79,6 +79,11 @@ export interface GitHubPr {
   // the dashboard's "Recently merged" section and how far back
   // LiveGitHubConnector bothers fetching merged PRs at all.
   closedAt?: string;
+  // Only meaningful (and only fetched) for an open PR — GitHub's own
+  // mergeable check, true when it's CONFLICTING. Surfaces real merge
+  // conflicts on the dashboard instead of a PR silently sitting
+  // unmergeable with no visible signal anywhere.
+  hasConflicts?: boolean;
 }
 
 export function prJiraKeys(pr: GitHubPr): string[] {
