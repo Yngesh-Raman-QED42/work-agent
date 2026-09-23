@@ -929,6 +929,9 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
           var current = document.getElementById(id);
           if (fresh && current) current.replaceWith(fresh);
         });
+        // The swapped-in panels are freshly rendered from the server, so
+        // their search boxes come back empty — reapply whatever was saved.
+        restorePanelSearches(document);
       });
   }
   document.addEventListener('click', function (e) {
@@ -963,13 +966,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   // just the ticket id. A category or a collapsible <details> auto-opens
   // when it contains a match, and restores its original open/closed state
   // once the search is cleared.
-  document.addEventListener('input', function (e) {
-    var input = e.target.closest('.panel-search');
-    if (!input) return;
-    var panel = input.closest('.panel');
-    if (!panel) return;
-    var query = input.value.trim().toLowerCase();
-
+  function applyPanelSearch(panel, query) {
     var items = panel.querySelectorAll('.item-row, .card');
     items.forEach(function (item) {
       var matches = !query || item.textContent.toLowerCase().indexOf(query) !== -1;
@@ -997,7 +994,60 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
       if (d.dataset.wasOpen === undefined) d.dataset.wasOpen = d.open ? '1' : '0';
       if (!query) d.open = d.dataset.wasOpen === '1';
     });
+  }
+
+  // Panel headings are unique on this page, so they double as a stable
+  // sessionStorage key — no need to thread ids through every panel just
+  // for this.
+  function panelSearchKey(panel) {
+    var h2 = panel.querySelector('.panel-head h2');
+    return h2 ? 'wa-search:' + h2.textContent.trim() : null;
+  }
+
+  document.addEventListener('input', function (e) {
+    var input = e.target.closest('.panel-search');
+    if (!input) return;
+    var panel = input.closest('.panel');
+    if (!panel) return;
+    applyPanelSearch(panel, input.value.trim().toLowerCase());
+    try {
+      var key = panelSearchKey(panel);
+      if (key) {
+        if (input.value) sessionStorage.setItem(key, input.value);
+        else sessionStorage.removeItem(key);
+      }
+    } catch (err) {
+      // Private-browsing storage restrictions etc. — search still works
+      // for this page view, it just won't survive a refresh.
+    }
   });
+
+  // Restores every panel's search box (and re-applies its filter) from
+  // sessionStorage. Without this, the 60s auto-refresh below — a full page
+  // reload — silently cleared whatever you'd typed and showed everything
+  // again; same gap existed in the archive/unarchive panel swap further
+  // down, since the freshly rendered panel HTML it swaps in starts with an
+  // empty search box too. sessionStorage (not the DOM) is the source of
+  // truth for "what was I searching," so both cases just call this again.
+  function restorePanelSearches(root) {
+    var inputs = root.querySelectorAll('.panel-search');
+    inputs.forEach(function (input) {
+      var panel = input.closest('.panel');
+      if (!panel) return;
+      var key = panelSearchKey(panel);
+      if (!key) return;
+      var saved;
+      try {
+        saved = sessionStorage.getItem(key);
+      } catch (err) {
+        saved = null;
+      }
+      if (!saved) return;
+      input.value = saved;
+      applyPanelSearch(panel, saved.trim().toLowerCase());
+    });
+  }
+  restorePanelSearches(document);
 
   // ---------------------------------------------------------------------
   // Ticket detail dialog — click a ticket card to see the full Jira issue
