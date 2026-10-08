@@ -57,6 +57,114 @@ const ON_HOLD_TASK: TaskContext = {
   comments: [{ author: 'Anand Toshniwal', body: 'keep this one on hold.. do not start working on this one' }],
 };
 
+// Mirrors the real QED42OPSIN-96..123 case this feature was built for: a
+// User Story whose own description is thin ("As a user...") but whose
+// sub-tasks carry the real acceptance criteria — and one sub-task
+// (QED42OPSIN-120) that's genuinely permission-related and must still
+// block the whole story, not just itself.
+const STORY_WITH_CLEAN_SUBTASKS: TaskContext = {
+  key: 'QED42OPSIN-96',
+  project: 'QED42OPSIN',
+  summary: 'Utilization dashboard for the Capacity Planner',
+  description: 'As a manager, I want a utilization dashboard.',
+  issueType: 'User Story',
+  status: 'To Do',
+  priority: 'Medium',
+  url: 'http://x/QED42OPSIN-96',
+  comments: [],
+  subtasks: [
+    {
+      key: 'QED42OPSIN-101',
+      project: 'QED42OPSIN',
+      summary: 'Add the utilization-by-week SQL query',
+      description:
+        'Write a query that aggregates logged hours per person per week for the current quarter, grouped by ' +
+        'project, excluding time off and holidays from the denominator.',
+      issueType: 'Sub-task',
+      status: 'To Do',
+      priority: 'Medium',
+      url: 'http://x/QED42OPSIN-101',
+      comments: [],
+    },
+    {
+      key: 'QED42OPSIN-102',
+      project: 'QED42OPSIN',
+      summary: 'Expose GET /api/utilization',
+      description: 'Add a REST endpoint returning the query above as JSON, paginated by team.',
+      issueType: 'Sub-task',
+      status: 'To Do',
+      priority: 'Medium',
+      url: 'http://x/QED42OPSIN-102',
+      comments: [],
+    },
+  ],
+};
+
+const STORY_WITH_SENSITIVE_SUBTASK: TaskContext = {
+  ...STORY_WITH_CLEAN_SUBTASKS,
+  key: 'QED42OPSIN-100',
+  summary: 'Access control, reconciliation and release',
+  subtasks: [
+    ...STORY_WITH_CLEAN_SUBTASKS.subtasks!,
+    {
+      key: 'QED42OPSIN-120',
+      project: 'QED42OPSIN',
+      summary: 'Permission check and role mapping for the utilization view',
+      description:
+        'Only managers and admins should see direct-report utilization; enforce this via a role-based ' +
+        'permission check on the new endpoint, matching the existing RBAC scheme.',
+      issueType: 'Sub-task',
+      status: 'To Do',
+      priority: 'Medium',
+      url: 'http://x/QED42OPSIN-120',
+      comments: [],
+    },
+  ],
+};
+
+describe('AutonomyPolicy — stories with sub-tasks', () => {
+  const policy = new AutonomyPolicy();
+
+  it('a "User Story" issue type is no longer rejected outright', () => {
+    const result = policy.isEligible(STORY_WITH_CLEAN_SUBTASKS);
+    expect(result.reasons.join(' ')).not.toMatch(/issue type .* is not eligible/);
+  });
+
+  it('a story with clean sub-tasks is eligible, even though its own description alone is short', () => {
+    expect(STORY_WITH_CLEAN_SUBTASKS.description.trim().length).toBeLessThan(80); // short on its own
+    const result = policy.isEligible(STORY_WITH_CLEAN_SUBTASKS);
+    expect(result.eligible).toBe(true);
+  });
+
+  it('a story is excluded when ANY of its sub-tasks touches a sensitive area — not just its own text', () => {
+    const result = policy.isEligible(STORY_WITH_SENSITIVE_SUBTASK);
+    expect(result.eligible).toBe(false);
+    expect(result.reasons[0]).toContain('sensitive');
+    expect(result.reasons[0]).toContain('QED42OPSIN-120'); // names which sub-task, not just "somewhere"
+  });
+
+  it('a story is excluded when a sub-task (not the story itself) carries an explicit hold instruction', () => {
+    const story = {
+      ...STORY_WITH_CLEAN_SUBTASKS,
+      subtasks: [
+        { ...STORY_WITH_CLEAN_SUBTASKS.subtasks![0]!, comments: [{ author: 'PM', body: 'do not start this sub-task yet' }] },
+      ],
+    };
+    const result = policy.isEligible(story);
+    expect(result.eligible).toBe(false);
+    expect(result.reasons[0]).toMatch(/hold instruction/);
+    expect(result.reasons[0]).toContain(story.subtasks[0]!.key);
+  });
+
+  it('a plain Task with no subtasks field behaves exactly as before (no regression)', () => {
+    const task: TaskContext = {
+      key: 'PROJ-1', project: 'PROJ', summary: 'x', description: 'd'.repeat(200),
+      issueType: 'Task', status: 'To Do', priority: 'Medium', url: 'http://x/PROJ-1', comments: [],
+    };
+    expect(policy.isEligible(task).eligible).toBe(true);
+  });
+});
+
 describe('AutonomyPolicy', () => {
   const policy = new AutonomyPolicy();
 

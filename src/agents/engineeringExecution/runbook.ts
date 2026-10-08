@@ -44,6 +44,32 @@ export const IN_REVIEW_STATUS_CANDIDATES = [
   'Peer Review',
 ];
 
+// Shared by startExecution and finishExecution — when the ticket being
+// worked is a story, every sub-task bundled into its branch gets the same
+// best-effort Jira status transition the story itself gets, so the board
+// doesn't show the story "In Progress"/"In Review" while every sub-task
+// underneath it still silently sits in "To Do." One sub-task's Jira
+// hiccup is logged and skipped, same as the story's own — it never stops
+// the rest.
+async function transitionSubtasks(
+  updater: JiraIssueUpdater,
+  subtasks: TaskContext[],
+  candidates: string[],
+  audit: AuditLog,
+  report: (message: string) => void,
+  stage: 'start' | 'finish',
+): Promise<void> {
+  for (const sub of subtasks) {
+    try {
+      const movedTo = await updater.transitionToStatus(sub.key, candidates);
+      await audit.log('execution_status_transitioned', { key: sub.key, to: movedTo, partOfStory: true });
+      if (movedTo) report(`Moved ${sub.key} to "${movedTo}" in Jira.`);
+    } catch (err) {
+      await audit.log('execution_status_transition_failed', { key: sub.key, stage, error: String(err) });
+    }
+  }
+}
+
 async function upsertTask(db: AnyDb, id: string, fields: Partial<typeof executionTasks.$inferInsert>): Promise<void> {
   const existing = await db.select().from(executionTasks).where(eq(executionTasks.id, id));
   const now = new Date();
@@ -162,12 +188,16 @@ export async function startExecution(deps: StartExecutionDeps): Promise<StartExe
   // starting now, so the ticket should say so — but a Jira hiccup here
   // must never stop the worktree that's already been created.
   if (deps.getIssueUpdater) {
+    const updater = deps.getIssueUpdater();
     try {
-      const movedTo = await deps.getIssueUpdater().transitionToStatus(task.key, IN_PROGRESS_STATUS_CANDIDATES);
+      const movedTo = await updater.transitionToStatus(task.key, IN_PROGRESS_STATUS_CANDIDATES);
       await audit.log('execution_status_transitioned', { key: task.key, to: movedTo });
       if (movedTo) report(`Moved ${task.key} to "${movedTo}" in Jira.`);
     } catch (err) {
       await audit.log('execution_status_transition_failed', { key: task.key, stage: 'start', error: String(err) });
+    }
+    if (task.subtasks && task.subtasks.length > 0) {
+      await transitionSubtasks(updater, task.subtasks, IN_PROGRESS_STATUS_CANDIDATES, audit, report, 'start');
     }
   }
 
@@ -391,10 +421,18 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
       ? `\n\n**Screenshots:**\n\n${screenshotsWithUrls.map((s) => `${s.label}\n\n![${s.label}](${assetUrls[path.basename(s.relativePath)]})`).join('\n\n')}\n`
       : '';
   const asDraft = config.engineeringExecution.openPrAsDraft;
+  // A story's sub-tasks are named explicitly here — a reviewer looking at
+  // one PR covering several sub-tasks needs to see exactly which ones it
+  // claims to close, the same way "Fixes" names the story itself.
+  const subtasksLine =
+    task.subtasks && task.subtasks.length > 0
+      ? `\n**Covers sub-tasks:** ${task.subtasks.map((s) => `[${s.key}](${s.url})`).join(', ')}\n`
+      : '';
   const prBody =
     `Fixes [${task.key}](${task.url}).\n\n` +
     `**Summary of changes:** ${outcome.summary}\n\n` +
     `**Checks:** ${checksLine}\n` +
+    subtasksLine +
     gifBlock +
     screenshotsBlock;
   const prUrl = await prCreator.createPr(repo, branchName, `${task.key}: ${task.summary}`, prBody, asDraft);
@@ -422,6 +460,26 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
       if (movedTo) report(`Moved ${task.key} to "${movedTo}" in Jira.`);
     } catch (err) {
       await audit.log('execution_status_transition_failed', { key: task.key, stage: 'finish', error: String(err) });
+    }
+
+    // One PR covers the whole story, so every sub-task bundled into it
+    // gets its own comment with the same PR link and the same "in
+    // review"-equivalent move — otherwise a reviewer opening a sub-task
+    // directly would see no sign the work behind it is already done and
+    // up for review, even though the story itself clearly says so.
+    if (task.subtasks && task.subtasks.length > 0) {
+      for (const sub of task.subtasks) {
+        try {
+          await updater.addComment(sub.key, `Implemented as part of ${task.key}: ${task.summary}.`, [
+            { label: `PR: ${task.key}: ${task.summary}`, url: prUrl },
+          ]);
+          await audit.log('execution_jira_comment_posted', { key: sub.key, partOfStory: task.key });
+          report(`Posted a comment on ${sub.key} with the PR link.`);
+        } catch (err) {
+          await audit.log('execution_jira_comment_failed', { key: sub.key, error: String(err) });
+        }
+      }
+      await transitionSubtasks(updater, task.subtasks, IN_REVIEW_STATUS_CANDIDATES, audit, report, 'finish');
     }
   }
 

@@ -114,6 +114,40 @@ useful to have open in a second tab while a long run is in progress.
 real `ClaudeCodeRunner` is already available) is unchanged — it's just `startExecution()` →
 `claudeRunner.run()` → `finishExecution()` wired together internally, not a different code path.
 
+### Stories: one branch/PR for the whole story, not one per sub-task
+
+`exec-start <STORY_KEY>` also accepts a story-level ticket (`User Story`/`Story` — whichever name
+the project's own Jira scheme uses), not just a `Task`/`Bug`. The motivating case: a story whose
+sub-tasks genuinely depend on each other (a later one needs an earlier one's code) is actively
+harmed by a separate branch per sub-task — each branch starts fresh off the base branch, so a
+dependent sub-task's branch wouldn't even contain its predecessor's code until that PR merges, and
+you'd end up with several small PRs that can't be meaningfully reviewed or tested alone (e.g. a
+UI with no API behind it yet).
+
+So a story is handled as one coherent unit instead:
+
+- `LiveJiraConnector.fetchIssueDetail` fetches a story's sub-tasks' full detail too (not just
+  Jira's own lightweight `{key, summary}` reference), attached as `task.subtasks` — absent/empty
+  for an ordinary Task/Bug, so every existing single-ticket code path is unaffected.
+- `AutonomyPolicy.isEligible` evaluates the story together with every sub-task under it: a
+  sensitive-keyword or explicit-hold match in *any* sub-task's own text blocks the whole story,
+  not just that sub-task (confirmed against the real case this was built for — a utilization
+  story whose own text is clean but one sub-task is genuinely permission/RBAC-related; that
+  sub-task's match is what excludes the story, named explicitly in the eligibility reason). The
+  minimum-description-length check also considers the sub-tasks' combined description, since a
+  story's own text is often just "As a user, I want X" with the real acceptance criteria living
+  in its sub-tasks.
+- The implementation prompt (`buildImplementationPrompt`) lists every sub-task's own summary,
+  description, and comments in full, explicitly framed as one branch of coherent work, not a
+  sub-task-by-sub-task checklist.
+- The branch/PR/commit still key off the story's own ticket key exactly like a plain ticket would
+  (e.g. `work-agent/qed42opsin-96`) — nothing special needed there, a story key is just a key.
+  `exec-finish`'s PR body additionally names every sub-task it covers, and — the same best-effort,
+  never-blocks-the-PR treatment the story's own Jira comment/status-move already gets — posts a
+  comment linking the PR and moves each sub-task through the same "in progress"/"in review"
+  transitions as the story, both at `exec-start` and `exec-finish`. Otherwise a reviewer opening a
+  sub-task directly would see no sign the work behind it is already up for review.
+
 ### The dashboard's "Start" button
 
 Every ticket card has a "▶ Start" button — it's the same thing as opening a terminal, `cd`-ing

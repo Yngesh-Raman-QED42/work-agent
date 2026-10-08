@@ -24,7 +24,13 @@ const SENSITIVE_KEYWORDS = [
   'invoice', 'salary', 'compensation', 'pii', 'gdpr', 'encrypt',
 ];
 
-const ALLOWED_ISSUE_TYPES = new Set(['task', 'bug']);
+// 'story'/'user story' cover both Jira's standard name and the renamed
+// version real projects use (QED42OPSIN's own scheme literally calls it
+// "User Story" — confirmed live). A story is only actually eligible when
+// isEligible's scan below (which covers the story's own text AND every
+// one of its sub-tasks') finds nothing blocking — this alone doesn't admit
+// every story, it just stops them being rejected on issue type alone.
+const ALLOWED_ISSUE_TYPES = new Set(['task', 'bug', 'story', 'user story']);
 // Every standard Jira priority is allowed — urgency alone doesn't make a
 // ticket unsafe for autonomous work; scope/sensitivity (checked below)
 // does. Kept as an explicit allowlist (not "anything goes") so a
@@ -78,19 +84,37 @@ export class AutonomyPolicy {
       return { eligible: false, reasons: [`status ${task.status} is not eligible (expected one of ${[...this.allowedStatuses].sort().join(', ')})`] };
     }
 
-    const fullText = taskFullText(task);
-    for (const phrase of BLOCKING_PHRASES) {
-      if (phrase.test(fullText)) {
-        return { eligible: false, reasons: [`found an explicit hold instruction matching ${phrase}`] };
+    // A story is evaluated together with everything under it, not just its
+    // own text — otherwise a story whose own description is perfectly
+    // clean could still silently carry a sensitive/held sub-task's work
+    // onto the same branch. For an ordinary Task/Bug with no sub-tasks,
+    // scopeTasks is just [task] and every check below behaves exactly as
+    // it did before this existed.
+    const scopeTasks = [task, ...(task.subtasks ?? [])];
+
+    for (const scopedTask of scopeTasks) {
+      const where = scopedTask.key === task.key ? '' : ` (in sub-task ${scopedTask.key})`;
+      const text = taskFullText(scopedTask);
+
+      for (const phrase of BLOCKING_PHRASES) {
+        if (phrase.test(text)) {
+          return { eligible: false, reasons: [`found an explicit hold instruction matching ${phrase}${where}`] };
+        }
+      }
+
+      const hitKeywords = SENSITIVE_KEYWORDS.filter((kw) => text.toLowerCase().includes(kw));
+      if (hitKeywords.length > 0) {
+        return { eligible: false, reasons: [`touches sensitive area(s): ${[...new Set(hitKeywords)].sort().join(', ')}${where}`] };
       }
     }
 
-    const hitKeywords = SENSITIVE_KEYWORDS.filter((kw) => fullText.toLowerCase().includes(kw));
-    if (hitKeywords.length > 0) {
-      return { eligible: false, reasons: [`touches sensitive area(s): ${[...new Set(hitKeywords)].sort().join(', ')}`] };
-    }
-
-    if (task.description.trim().length < this.minDescriptionLength) {
+    // A story's own description is often just "As a user, I want X" — the
+    // real acceptance criteria usually live in its sub-tasks, so the
+    // length check covers the combined text, not the story's description
+    // alone (which, for a plain Task/Bug with no sub-tasks, is the same
+    // number either way).
+    const combinedDescriptionLength = scopeTasks.map((t) => t.description.trim()).join('\n').trim().length;
+    if (combinedDescriptionLength < this.minDescriptionLength) {
       return { eligible: false, reasons: ['description is too short/absent to safely scope autonomous work'] };
     }
 
@@ -103,7 +127,9 @@ export class AutonomyPolicy {
         `status ${task.status} allowed`,
         'no blocking instructions found',
         'no sensitive keywords found',
-        `description length ${task.description.trim().length} chars, sufficient`,
+        task.subtasks && task.subtasks.length > 0
+          ? `combined description length (story + ${task.subtasks.length} sub-task(s)) ${combinedDescriptionLength} chars, sufficient`
+          : `description length ${combinedDescriptionLength} chars, sufficient`,
       ],
     };
   }

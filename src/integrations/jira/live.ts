@@ -79,8 +79,22 @@ export class LiveJiraConnector implements JiraConnector, JiraDetailReader {
   }
 
   async fetchIssueDetail(key: string): Promise<TaskContext> {
+    return this.fetchIssueDetailInternal(key, true);
+  }
+
+  /**
+   * `includeSubtasks` is only true for the top-level call — a real Jira
+   * sub-task can't itself have sub-tasks (hierarchyLevel -1, one level
+   * only), so the recursive per-subtask fetch below always passes false.
+   * That's what stops this from ever recursing more than one level deep,
+   * not an explicit depth counter.
+   */
+  private async fetchIssueDetailInternal(key: string, includeSubtasks: boolean): Promise<TaskContext> {
     const url = new URL(`${this.baseUrl}/rest/api/3/issue/${key}`);
-    url.searchParams.set('fields', 'summary,description,status,priority,issuetype,project,comment');
+    const fields = includeSubtasks
+      ? 'summary,description,status,priority,issuetype,project,comment,subtasks'
+      : 'summary,description,status,priority,issuetype,project,comment';
+    url.searchParams.set('fields', fields);
 
     const resp = await fetch(url, { headers: { Authorization: this.authHeader(), Accept: 'application/json' } });
     if (!resp.ok) {
@@ -96,8 +110,21 @@ export class LiveJiraConnector implements JiraConnector, JiraDetailReader {
         issuetype: { name: string };
         project: { key: string };
         comment?: { comments: Array<{ author: { displayName: string }; body: unknown }> };
+        subtasks?: Array<{ key: string }>;
       };
     };
+
+    // Each entry in Jira's own `subtasks` field is a lightweight reference
+    // (key/summary/status only, no description/comments) — not enough to
+    // judge policy eligibility or hand to an implementer, so each one gets
+    // its own full fetch, in parallel. A story with no real sub-tasks
+    // (subtasks: []) ends up with subtasks: undefined, not an empty array —
+    // keeps `task.subtasks?.length` the one check every caller needs.
+    const subtaskRefs = data.fields.subtasks ?? [];
+    const subtasks =
+      includeSubtasks && subtaskRefs.length > 0
+        ? await Promise.all(subtaskRefs.map((s) => this.fetchIssueDetailInternal(s.key, false)))
+        : undefined;
 
     return {
       key: data.key,
@@ -112,6 +139,7 @@ export class LiveJiraConnector implements JiraConnector, JiraDetailReader {
         author: c.author.displayName,
         body: adfOrTextToPlain(c.body as string | { content?: unknown } | null),
       })),
+      ...(subtasks ? { subtasks } : {}),
     };
   }
 }

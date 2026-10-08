@@ -13,6 +13,14 @@ export interface TaskContext {
   priority: string;
   url: string;
   comments: JiraComment[];
+  // Only populated when `key` is a story-level ticket with real sub-tasks
+  // under it (see LiveJiraConnector.fetchIssueDetail) — each one's own full
+  // detail (not just the lightweight {key, summary} Jira's own "subtasks"
+  // field returns), so Engineering Execution can hand the whole group to
+  // one branch/PR instead of starting a separate one per sub-task. Absent
+  // or empty for an ordinary Task/Bug — every existing caller that only
+  // ever dealt with a single ticket keeps working unchanged.
+  subtasks?: TaskContext[];
 }
 
 export function taskFullText(task: TaskContext): string {

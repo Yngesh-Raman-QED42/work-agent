@@ -224,6 +224,117 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
     expect(result.prUrl).toBeTruthy();
   });
 
+  it('startExecution also moves every sub-task of a story to "in progress," not just the story itself', async () => {
+    handle = await createTestDb();
+    const issueUpdater = new MockJiraIssueUpdater({ 'QED42OPSIN-96': 'In Progress', 'QED42OPSIN-101': 'In Progress', 'QED42OPSIN-102': 'In Progress' });
+    const story = makeTask('QED42OPSIN-96', {
+      issueType: 'User Story',
+      subtasks: [makeTask('QED42OPSIN-101'), makeTask('QED42OPSIN-102')],
+    });
+    await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [story],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      getIssueUpdater: () => issueUpdater,
+    });
+    expect(issueUpdater.transitionAttempts).toEqual([
+      { key: 'QED42OPSIN-96', candidates: IN_PROGRESS_STATUS_CANDIDATES },
+      { key: 'QED42OPSIN-101', candidates: IN_PROGRESS_STATUS_CANDIDATES },
+      { key: 'QED42OPSIN-102', candidates: IN_PROGRESS_STATUS_CANDIDATES },
+    ]);
+  });
+
+  it('finishExecution comments on and transitions every sub-task of a story, and the PR body names them all', async () => {
+    handle = await createTestDb();
+    const issueUpdater = new MockJiraIssueUpdater();
+    const story = makeTask('QED42OPSIN-96', {
+      issueType: 'User Story',
+      summary: 'Utilization dashboard',
+      subtasks: [
+        makeTask('QED42OPSIN-101', { url: 'http://x/QED42OPSIN-101' }),
+        makeTask('QED42OPSIN-102', { url: 'http://x/QED42OPSIN-102' }),
+      ],
+    });
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [story],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    const prCreator = new MockPullRequestCreator();
+    const result = await finishExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      task: started.task!,
+      repo: started.repo!,
+      worktreePath: started.worktreePath!,
+      startedAt: started.startedAt!,
+      outcome: { success: true, summary: 'built the dashboard query, endpoint, and UI' },
+      gitOps: new MockGitOps(),
+      prCreator,
+      checkCommands: NOOP_CHECKS,
+      getIssueUpdater: () => issueUpdater,
+    });
+
+    expect(result.status).toBe('opened_pr');
+    // One branch/PR for the whole story — the branch name comes from the
+    // story's own key exactly like a plain ticket's would.
+    expect(result.branch).toBe('work-agent/qed42opsin-96');
+
+    const subtaskComments = issueUpdater.comments.filter((c) => c.key === 'QED42OPSIN-101' || c.key === 'QED42OPSIN-102');
+    expect(subtaskComments).toHaveLength(2);
+    expect(subtaskComments.every((c) => c.links[0]!.url === result.prUrl)).toBe(true);
+    expect(issueUpdater.transitionAttempts).toContainEqual({ key: 'QED42OPSIN-101', candidates: IN_REVIEW_STATUS_CANDIDATES });
+    expect(issueUpdater.transitionAttempts).toContainEqual({ key: 'QED42OPSIN-102', candidates: IN_REVIEW_STATUS_CANDIDATES });
+
+    const createdPr = prCreator.calls[0]!;
+    expect(createdPr.body).toContain('**Covers sub-tasks:**');
+    expect(createdPr.body).toContain('QED42OPSIN-101');
+    expect(createdPr.body).toContain('QED42OPSIN-102');
+  });
+
+  it('one sub-task\'s Jira comment/transition failure never blocks the others or the already-opened PR', async () => {
+    handle = await createTestDb();
+    const issueUpdater = new MockJiraIssueUpdater();
+    const originalAddComment = issueUpdater.addComment.bind(issueUpdater);
+    issueUpdater.addComment = (key: string, text: string, links?: Array<{ label: string; url: string }>) => {
+      if (key === 'QED42OPSIN-101') return Promise.reject(new Error('Jira is down for this one'));
+      return originalAddComment(key, text, links);
+    };
+    const story = makeTask('QED42OPSIN-96', {
+      issueType: 'User Story',
+      subtasks: [makeTask('QED42OPSIN-101'), makeTask('QED42OPSIN-102')],
+    });
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [story],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    const result = await finishExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      task: started.task!,
+      repo: started.repo!,
+      worktreePath: started.worktreePath!,
+      startedAt: started.startedAt!,
+      outcome: { success: true, summary: 'done' },
+      gitOps: new MockGitOps(),
+      prCreator: new MockPullRequestCreator(),
+      checkCommands: NOOP_CHECKS,
+      getIssueUpdater: () => issueUpdater,
+    });
+
+    expect(result.status).toBe('opened_pr');
+    expect(result.prUrl).toBeTruthy();
+    // The other sub-task's comment still went through despite the first one failing.
+    expect(issueUpdater.comments.some((c) => c.key === 'QED42OPSIN-102')).toBe(true);
+  });
+
   it('finishExecution alone, given a real outcome, completes the pipeline the same way runExecution\'s second half does', async () => {
     handle = await createTestDb();
     const started = await startExecution({
