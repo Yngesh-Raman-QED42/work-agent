@@ -20,6 +20,8 @@ import { selectTask } from './selector.js';
 import { WorktreeManager, materializeRealNodeModules } from './worktree.js';
 import { formatMinutes } from '../workLog/timeEntry.js';
 import type { JiraIssueUpdater } from '../../integrations/jira/issueUpdater.js';
+import type { FigmaClient } from '../../integrations/figma/client.js';
+import { collectFigmaReferences } from './figmaReference.js';
 import {
   PlaywrightScreenshotCapture,
   readScreenshotSteps,
@@ -103,6 +105,11 @@ export interface StartExecutionDeps {
   // updater throws in its constructor without real Jira creds, so it's
   // only ever constructed when there's an issue to actually update.
   getIssueUpdater?: () => JiraIssueUpdater;
+  // Same reasoning as getIssueUpdater above — a live client throws without
+  // FIGMA_ACCESS_TOKEN set, so it's only ever constructed when a ticket
+  // actually has a Figma link to resolve. Defaults to a real
+  // LiveFigmaClient (see figmaReference.ts); tests inject a MockFigmaClient.
+  figmaClientFactory?: () => FigmaClient;
   // Real-time progress for the CLI (see cli.ts) — a silent multi-minute
   // run with no output feels indistinguishable from a hang. No-op by
   // default so tests stay quiet; the audit log remains the durable record
@@ -201,8 +208,15 @@ export async function startExecution(deps: StartExecutionDeps): Promise<StartExe
     }
   }
 
+  // Entirely content-driven — most tickets have no Figma link at all, in
+  // which case this returns [] immediately and the prompt reads exactly
+  // as it always has. See figmaReference.ts for the best-effort/never-
+  // blocks-exec-start reasoning (same as the screenshot step).
+  const figmaReferences = await collectFigmaReferences(task, worktreePath, audit, deps.figmaClientFactory);
+  if (figmaReferences.length > 0) report(`Found ${figmaReferences.length} linked Figma design reference(s).`);
+
   const previewRecipe = await resolvePreviewRecipe(config.github.previewRecipes[repoFullName(repo)], repo.localPath);
-  const prompt = buildImplementationPrompt(task, worktreePath, previewRecipe);
+  const prompt = buildImplementationPrompt(task, worktreePath, previewRecipe, figmaReferences);
 
   return { status: 'started', task, repo, worktreePath, prompt, startedAt, reasons: [] };
 }

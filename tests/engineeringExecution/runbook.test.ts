@@ -12,6 +12,8 @@ import { WorktreeManager } from '../../src/agents/engineeringExecution/worktree.
 import { DEFAULT_GATE_CONFIG } from '../../src/agents/engineeringExecution/gate.js';
 import { MockScreenshotCapture, SCREENSHOT_STEPS_PATH } from '../../src/agents/engineeringExecution/screenshot.js';
 import { MockJiraIssueUpdater } from '../../src/integrations/jira/issueUpdater.js';
+import { MockFigmaClient } from '../../src/integrations/figma/client.js';
+import { FIGMA_REFERENCE_DIR } from '../../src/agents/engineeringExecution/figmaReference.js';
 import { IN_PROGRESS_STATUS_CANDIDATES, IN_REVIEW_STATUS_CANDIDATES } from '../../src/agents/engineeringExecution/runbook.js';
 import type { TaskContext } from '../../src/agents/engineeringExecution/models.js';
 import type { WorkAgentConfig } from '../../src/config/index.js';
@@ -97,6 +99,29 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
     expect(started.worktreePath).toBeTruthy();
     expect(started.prompt).toContain('PROJ-1');
     expect(started.startedAt).toBeInstanceOf(Date);
+    // The common case — no Figma link in the ticket — leaves the prompt
+    // completely unaffected by this feature existing.
+    expect(started.prompt).not.toContain('Figma');
+  });
+
+  it('a ticket with a linked Figma design gets a pre-rendered reference saved into its own worktree, named and listed in the prompt', async () => {
+    handle = await createTestDb();
+    const task = makeTask('PROJ-1', { description: 'd'.repeat(200) + ' See https://figma.com/design/ABC/x?node-id=1-1' });
+    const figmaClient = new MockFigmaClient({ 'ABC:1:1': { name: 'Homepage / Desktop', pngBytes: Buffer.from([1, 2, 3]) } });
+
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [task],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      figmaClientFactory: () => figmaClient,
+    });
+
+    expect(started.status).toBe('started');
+    expect(started.prompt).toContain('Homepage / Desktop');
+    expect(started.prompt).toContain(FIGMA_REFERENCE_DIR);
+    expect(existsSync(join(started.worktreePath!, FIGMA_REFERENCE_DIR, 'figma-1-homepage-desktop.png'))).toBe(true);
   });
 
   it('startExecution reports no_eligible_task exactly like runExecution does, with no worktree created', async () => {

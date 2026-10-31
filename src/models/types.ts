@@ -63,6 +63,40 @@ export function extractGitHubPrRefs(...texts: (string | null | undefined)[]): Gi
   return refs;
 }
 
+export interface FigmaRef {
+  fileKey: string;
+  // Present when the link points at one specific frame/node ("node-id=" in
+  // the URL — Figma writes it dash-separated there, e.g. "12-345", but its
+  // own REST API wants "12:345"; normalized to the colon form here so
+  // every caller gets the form the API actually accepts). Absent when a
+  // ticket just links the whole file — nothing to render as one image, but
+  // still worth passing the link itself through to the implementer.
+  nodeId?: string;
+  url: string;
+}
+
+// Matches figma.com/file/... (older links) and figma.com/design/... /proto/...
+// (current share-link format) — the file key is the one part of the path
+// that's stable across all of them.
+const FIGMA_URL_RE = /https?:\/\/(?:www\.)?figma\.com\/(?:file|design|proto)\/([a-zA-Z0-9]+)(?:\/[^\s?)]*)?(\?[^\s)]*)?/g;
+
+export function extractFigmaRefs(...texts: (string | null | undefined)[]): FigmaRef[] {
+  const refs: FigmaRef[] = [];
+  for (const text of texts) {
+    if (!text) continue;
+    for (const match of text.matchAll(FIGMA_URL_RE)) {
+      const fileKey = match[1]!;
+      const query = match[2] ?? '';
+      const nodeIdRaw = new URLSearchParams(query).get('node-id');
+      const nodeId = nodeIdRaw ? nodeIdRaw.replace('-', ':') : undefined;
+      if (!refs.some((r) => r.fileKey === fileKey && r.nodeId === nodeId)) {
+        refs.push({ fileKey, nodeId, url: match[0] });
+      }
+    }
+  }
+  return refs;
+}
+
 export interface GitHubPr {
   repo: string;
   number: number;

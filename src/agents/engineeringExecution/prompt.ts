@@ -1,11 +1,17 @@
 import type { TaskContext } from './models.js';
 import { SCREENSHOT_STEPS_PATH, type PreviewRecipe } from './screenshot.js';
+import type { FigmaDesignReference } from './figmaReference.js';
 
 function commentsBlockFor(task: TaskContext): string {
   return task.comments.length > 0 ? task.comments.map((c) => `- ${c.author}: ${c.body}`).join('\n') : '(no comments)';
 }
 
-export function buildImplementationPrompt(task: TaskContext, worktreePath: string, previewRecipe: PreviewRecipe | null = null): string {
+export function buildImplementationPrompt(
+  task: TaskContext,
+  worktreePath: string,
+  previewRecipe: PreviewRecipe | null = null,
+  figmaReferences: FigmaDesignReference[] = [],
+): string {
   const commentsBlock = commentsBlockFor(task);
   const subtasks = task.subtasks ?? [];
   const hasSubtasks = subtasks.length > 0;
@@ -25,6 +31,43 @@ ${subtasks
   )
   .join('\n')}`
     : '';
+
+  // Only present when extractFigmaRefs actually found a link in the
+  // ticket's own text — the overwhelming majority of tickets have none,
+  // in which case this is '' and nothing below changes versus before this
+  // existed. A ticket can legitimately link more than one frame (e.g. a
+  // separate desktop and mobile design for the same page) — each one is
+  // listed by its own Figma-given frame name (which is how real design
+  // files already distinguish "Homepage / Desktop" from
+  // "Homepage / Mobile"), not guessed at by this code.
+  const figmaBlock =
+    figmaReferences.length > 0
+      ? `\n\nThis ${hasSubtasks ? 'story' : 'ticket'} has ${figmaReferences.length} linked Figma design reference(s) — build the UI to
+match pixel-perfectly:
+${figmaReferences
+  .map((r, i) => {
+    const label = r.name ?? `design reference ${i + 1}`;
+    const viewLine = r.savedRelativePath
+      ? `Reference image saved in your own worktree at ${r.savedRelativePath} — view it directly (it's a real file) before writing any UI code.`
+      : `No pre-rendered image is available for this one — open the link directly if you can, or read it via your own Figma access if you have any.`;
+    return `- ${label}: ${r.url}\n  ${viewLine}`;
+  })
+  .join('\n')}
+
+"Pixel-perfect" means the RENDERED result matches the design exactly — layout, spacing, color,
+typography, and every breakpoint/state shown above (treat a separate mobile reference, if one is
+listed, as its own responsive layout to implement, not a scaled-down copy of the desktop one). It
+does NOT mean hardcoding literal pixel values, hex colors, or one-off inline styles to get there.
+Before writing any UI code: inspect this project's existing design-token/component layer (theme
+file, CSS variables, a shared component library — whatever this specific codebase already uses)
+and express the design through that, reusing or extending what's already there. Only introduce a
+new token or component when nothing existing covers it, and if you do, add it at the same level
+of generality as the existing ones — never as an ad-hoc value sitting inline in just one place.
+If FIGMA_ACCESS_TOKEN is set in your environment, you can also call Figma's REST API
+(https://www.figma.com/developers/api) directly for exact values instead of estimating from the
+image.`
+      : '';
+
   const loginBlock = previewRecipe?.testLogin
     ? ` This app requires signing in to see most pages — if your screenshot needs an
 authenticated view, make your FIRST step log in using this exact test identity, then a
@@ -96,6 +139,7 @@ ${task.description}
 Comments:
 ${commentsBlock}
 ${subtasksBlock}
+${figmaBlock}
 ${screenshotBlock}
 
 When you're done (or if you stopped early), give a final summary of exactly what you

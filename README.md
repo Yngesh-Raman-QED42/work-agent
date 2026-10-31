@@ -148,6 +148,46 @@ So a story is handled as one coherent unit instead:
   transitions as the story, both at `exec-start` and `exec-finish`. Otherwise a reviewer opening a
   sub-task directly would see no sign the work behind it is already up for review.
 
+### Figma design references — pixel-perfect, generically
+
+Not every project needs this, so there's nothing to turn on or configure per-project: it's purely
+content-driven. If a ticket's description/comments (or, for a story, any of its sub-tasks') link
+a Figma frame, `exec-start` picks it up automatically; a ticket with no Figma link is completely
+unaffected.
+
+- `extractFigmaRefs` (`src/models/types.ts`, same pattern as the existing Jira-key/GitHub-PR-ref
+  extractors) finds every `figma.com/(file|design|proto)/...` URL in the ticket's full text. A
+  link naming one specific frame (a `node-id` in the URL) is renderable; a bare whole-file link
+  isn't, but still gets passed through as a reference.
+- `collectFigmaReferences` (`src/agents/engineeringExecution/figmaReference.ts`) renders each
+  renderable ref to a PNG via the Figma REST API and saves it inside that ticket's own worktree at
+  `.work-agent/figma-reference/` — a real file the implementing session can view directly, not
+  something described in prose. Labeled by the frame's own Figma name (e.g. "Homepage / Desktop"),
+  which is how a ticket linking separate desktop and mobile frames for the same page reads as
+  exactly that, rather than this code trying to guess breakpoints from a URL. Entirely best-effort,
+  same philosophy as the screenshot-capture step: no `FIGMA_ACCESS_TOKEN` configured, a bad/expired
+  token, or a single ref failing to render (deleted node, network hiccup) is logged and skipped —
+  `exec-start` never stops over a design reference failing, the raw link still reaches the prompt
+  either way.
+- `buildImplementationPrompt` lists each reference and is explicit that pixel-perfect means the
+  *rendered result* matches — not hardcoded pixel/hex values. It tells the implementer to inspect
+  this specific project's own existing design-token/component layer first and express the design
+  through that (extend/reuse what's there; only add a new token/component at the same level of
+  generality as the existing ones if nothing already covers it). This is stated outright because
+  "pixel-perfect," left unqualified, nudges toward exactly the kind of inline magic-value styling
+  this is meant to avoid — "pixel-perfect" is about the visual result, never the implementation
+  technique.
+
+**Setup:** generate a read-only Figma personal access token (Figma → account settings → "Personal
+access tokens") and set `FIGMA_ACCESS_TOKEN` in `.env` (see `.env.example`) — not in
+`work-agent.config.json`, same as every other credential in this project. One token covers two
+separate things: `collectFigmaReferences` above uses it server-side to pre-render images, and
+because the dashboard launches `claude` as a child process of the same shell
+(`cd <dir> && claude "<prompt>"` — see `launchSession.ts`), the implementing session inherits it
+too and can call Figma's REST API directly for exact spacing/color/typography values instead of
+estimating from an image, with no separate setup. Leave it blank if no project you work on uses
+Figma — nothing else about Work Agent changes either way.
+
 ### The dashboard's "Start" button
 
 Every ticket card has a "▶ Start" button — it's the same thing as opening a terminal, `cd`-ing

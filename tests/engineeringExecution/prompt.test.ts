@@ -72,3 +72,51 @@ describe('buildImplementationPrompt — a story with sub-tasks', () => {
     expect(prompt).toMatch(/QED42OPSIN-102[\s\S]*\(no comments\)/);
   });
 });
+
+describe('buildImplementationPrompt — no Figma reference (the common case)', () => {
+  it('omits the Figma block entirely — prompt reads identically to before this feature existed', () => {
+    const prompt = buildImplementationPrompt(makeTask(), '/tmp/wt', null, []);
+    expect(prompt).not.toContain('Figma');
+    expect(prompt).not.toContain('pixel-perfect');
+  });
+});
+
+describe('buildImplementationPrompt — with Figma design references', () => {
+  it('lists a rendered reference by its own Figma frame name and points at the saved file in the worktree', () => {
+    const prompt = buildImplementationPrompt(makeTask(), '/tmp/wt', null, [
+      { url: 'https://figma.com/design/ABC/x?node-id=1-1', name: 'Homepage / Desktop', savedRelativePath: '.work-agent/figma-reference/figma-1-homepage-desktop.png' },
+    ]);
+    expect(prompt).toContain('This ticket has 1 linked Figma design reference(s)');
+    expect(prompt).toContain('- Homepage / Desktop: https://figma.com/design/ABC/x?node-id=1-1');
+    expect(prompt).toContain('.work-agent/figma-reference/figma-1-homepage-desktop.png');
+  });
+
+  it('lists desktop and mobile as two distinct, clearly labeled references', () => {
+    const prompt = buildImplementationPrompt(makeTask(), '/tmp/wt', null, [
+      { url: 'http://figma/d', name: 'Homepage / Desktop', savedRelativePath: '.work-agent/figma-reference/figma-1-desktop.png' },
+      { url: 'http://figma/m', name: 'Homepage / Mobile', savedRelativePath: '.work-agent/figma-reference/figma-2-mobile.png' },
+    ]);
+    expect(prompt).toContain('This ticket has 2 linked Figma design reference(s)');
+    expect(prompt).toContain('Homepage / Desktop');
+    expect(prompt).toContain('Homepage / Mobile');
+  });
+
+  it('a reference with no saved image falls back to telling the implementer to open the link directly', () => {
+    const prompt = buildImplementationPrompt(makeTask(), '/tmp/wt', null, [{ url: 'https://figma.com/file/ABC/x' }]);
+    expect(prompt).toContain('design reference 1: https://figma.com/file/ABC/x');
+    expect(prompt).toContain('No pre-rendered image is available');
+  });
+
+  it('explicitly says pixel-perfect means matching the render, not hardcoding values — and to reuse this project\'s own tokens/components', () => {
+    const prompt = buildImplementationPrompt(makeTask(), '/tmp/wt', null, [{ url: 'http://x', name: 'Frame' }]);
+    expect(prompt).toMatch(/does NOT mean hardcoding literal pixel values/);
+    expect(prompt).toMatch(/existing design-token\/component layer/);
+    expect(prompt).toMatch(/reusing or extending what's already there/);
+  });
+
+  it('frames a Figma reference on a story as covering the whole story, not just "ticket"', () => {
+    const story = makeTask({ subtasks: [makeTask({ key: 'PROJ-2' })] });
+    const prompt = buildImplementationPrompt(story, '/tmp/wt', null, [{ url: 'http://x', name: 'Frame' }]);
+    expect(prompt).toContain('This story has 1 linked Figma design reference(s)');
+  });
+});
