@@ -1,3 +1,4 @@
+import { runBackendSync, type BackendSyncRunner } from './backendSync.js';
 import { eq } from 'drizzle-orm';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -115,9 +116,11 @@ export interface StartExecutionDeps {
   // default so tests stay quiet; the audit log remains the durable record
   // either way, this is purely "something is happening" feedback.
   onProgress?: (message: string) => void;
+  // Test seam for github.backendSync — production runs the real command.
+  backendSyncRunner?: BackendSyncRunner;
 }
 
-export type StartExecutionStatus = 'started' | 'stopped_ambiguous' | 'no_eligible_task';
+export type StartExecutionStatus = 'started' | 'stopped_ambiguous' | 'stopped_backend_sync' | 'no_eligible_task';
 
 export interface StartExecutionResult {
   status: StartExecutionStatus;
@@ -127,6 +130,8 @@ export interface StartExecutionResult {
   prompt?: string;
   startedAt?: Date;
   reasons: string[];
+  /** Set when the repo has a github.backendSync entry and it ran. */
+  backendSync?: { ok: boolean; outputTail: string };
 }
 
 export async function startExecution(deps: StartExecutionDeps): Promise<StartExecutionResult> {
@@ -184,6 +189,34 @@ export async function startExecution(deps: StartExecutionDeps): Promise<StartExe
     return { status: 'stopped_ambiguous', task, reasons: [reason] };
   }
 
+  // Bring this repo's local backend up to date before any work starts (only
+  // when configured — see backendSync.ts). Runs before the worktree and the
+  // Jira transition, so a "stop" failure leaves nothing half-started.
+  const backendRecipe = config.github.backendSync?.[repoFullName(repo)];
+  let backendSync: StartExecutionResult['backendSync'];
+  if (backendRecipe) {
+    const label = backendRecipe.description ?? 'backend';
+    report(`Updating the local ${label} to its latest code before starting (${backendRecipe.command.join(' ')})...`);
+    const sync = await runBackendSync(backendRecipe, deps.backendSyncRunner);
+    backendSync = { ok: sync.ok, outputTail: sync.outputTail };
+    await audit.log(sync.ok ? 'execution_backend_synced' : 'execution_backend_sync_failed', {
+      key: task.key,
+      command: backendRecipe.command,
+      duration_ms: sync.durationMs,
+      output_tail: sync.outputTail,
+    });
+    if (sync.ok) {
+      report(`Local ${label} is up to date (${Math.round(sync.durationMs / 1000)}s).`);
+    } else if (backendRecipe.onFailure === 'stop') {
+      const reason = `updating the local ${label} failed, so ${task.key} was not started:\n${sync.outputTail}`;
+      await audit.log('execution_stopped_backend_sync', { key: task.key });
+      await upsertTask(db, task.key, { status: 'failed' });
+      return { status: 'stopped_backend_sync', task, repo, reasons: [reason], backendSync };
+    } else {
+      report(`WARNING: updating the local ${label} failed; continuing against whatever is running now:\n${sync.outputTail}`);
+    }
+  }
+
   report(`Selected ${task.key}. Creating an isolated git worktree off ${repo.defaultBranch}...`);
   const wtManager = deps.worktreeManagerFactory ? deps.worktreeManagerFactory(repo.localPath) : new WorktreeManager(repo.localPath);
   const worktreePath = await wtManager.create(task.key.toLowerCase(), repo.defaultBranch);
@@ -218,7 +251,7 @@ export async function startExecution(deps: StartExecutionDeps): Promise<StartExe
   const previewRecipe = await resolvePreviewRecipe(config.github.previewRecipes[repoFullName(repo)], repo.localPath);
   const prompt = buildImplementationPrompt(task, worktreePath, previewRecipe, figmaReferences);
 
-  return { status: 'started', task, repo, worktreePath, prompt, startedAt, reasons: [] };
+  return { status: 'started', task, repo, worktreePath, prompt, startedAt, reasons: [], backendSync };
 }
 
 // ---------------------------------------------------------------------------

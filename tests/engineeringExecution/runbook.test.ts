@@ -124,6 +124,121 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
     expect(existsSync(join(started.worktreePath!, FIGMA_REFERENCE_DIR, 'figma-1-homepage-desktop.png'))).toBe(true);
   });
 
+  describe('backend sync (github.backendSync)', () => {
+    function configWithBackendSync(onFailure: 'warn' | 'stop' = 'warn'): WorkAgentConfig {
+      const config = configWithRepo();
+      config.github.backendSync = {
+        'org/repo': { command: ['/path/to/update-backend.sh', '--quick'], cwd: '/backend', timeoutMs: 1234, onFailure, description: 'CMS backend' },
+      };
+      return config;
+    }
+
+    it('runs the configured command before the worktree is created, with its cwd and timeout', async () => {
+      handle = await createTestDb();
+      const order: string[] = [];
+      const calls: Array<{ cmd: string[]; opts: { cwd?: string; timeoutMs?: number } }> = [];
+      const wt = new FakeWorktreeManager();
+      const realCreate = wt.create.bind(wt);
+      wt.create = async (hint: string) => {
+        order.push('worktree');
+        return realCreate(hint);
+      };
+      const progress: string[] = [];
+      const started = await startExecution({
+        db: handle.db,
+        config: configWithBackendSync(),
+        candidates: [makeTask()],
+        policy: new AutonomyPolicy(),
+        worktreeManagerFactory: () => wt,
+        onProgress: (m) => progress.push(m),
+        backendSyncRunner: async (cmd, opts) => {
+          order.push('backend');
+          calls.push({ cmd, opts });
+          return { command: cmd.join(' '), code: 0, output: 'pulled abc -> def\nOK - backend up' };
+        },
+      });
+      expect(started.status).toBe('started');
+      expect(order).toEqual(['backend', 'worktree']);
+      expect(calls).toEqual([{ cmd: ['/path/to/update-backend.sh', '--quick'], opts: { cwd: '/backend', timeoutMs: 1234 } }]);
+      expect(started.backendSync).toEqual({ ok: true, outputTail: 'pulled abc -> def\nOK - backend up' });
+      expect(progress.some((m) => m.includes('Local CMS backend is up to date'))).toBe(true);
+    });
+
+    it('does nothing for a repo without an entry', async () => {
+      handle = await createTestDb();
+      let ran = false;
+      const started = await startExecution({
+        db: handle.db,
+        config: configWithRepo(),
+        candidates: [makeTask()],
+        policy: new AutonomyPolicy(),
+        worktreeManagerFactory: () => new FakeWorktreeManager(),
+        backendSyncRunner: async (cmd) => {
+          ran = true;
+          return { command: cmd.join(' '), code: 0, output: '' };
+        },
+      });
+      expect(started.status).toBe('started');
+      expect(ran).toBe(false);
+      expect(started.backendSync).toBeUndefined();
+    });
+
+    it('never runs for a ticket that is not eligible', async () => {
+      handle = await createTestDb();
+      let ran = false;
+      await startExecution({
+        db: handle.db,
+        config: configWithBackendSync(),
+        candidates: [makeTask('PROJ-1', { issueType: 'Epic' })],
+        policy: new AutonomyPolicy(),
+        worktreeManagerFactory: () => new FakeWorktreeManager(),
+        backendSyncRunner: async (cmd) => {
+          ran = true;
+          return { command: cmd.join(' '), code: 0, output: '' };
+        },
+      });
+      expect(ran).toBe(false);
+    });
+
+    it('onFailure "warn" reports the failure and still starts the task', async () => {
+      handle = await createTestDb();
+      const progress: string[] = [];
+      const started = await startExecution({
+        db: handle.db,
+        config: configWithBackendSync('warn'),
+        candidates: [makeTask()],
+        policy: new AutonomyPolicy(),
+        worktreeManagerFactory: () => new FakeWorktreeManager(),
+        onProgress: (m) => progress.push(m),
+        backendSyncRunner: async (cmd) => ({ command: cmd.join(' '), code: 1, output: 'FAILED: repo has local changes' }),
+      });
+      expect(started.status).toBe('started');
+      expect(started.worktreePath).toBeTruthy();
+      expect(started.backendSync).toEqual({ ok: false, outputTail: 'FAILED: repo has local changes' });
+      expect(progress.some((m) => m.startsWith('WARNING') && m.includes('FAILED: repo has local changes'))).toBe(true);
+    });
+
+    it('onFailure "stop" does not start the task: no worktree, no Jira transition', async () => {
+      handle = await createTestDb();
+      const wt = new FakeWorktreeManager();
+      const issueUpdater = new MockJiraIssueUpdater({ 'PROJ-1': 'In Progress' });
+      const started = await startExecution({
+        db: handle.db,
+        config: configWithBackendSync('stop'),
+        candidates: [makeTask()],
+        policy: new AutonomyPolicy(),
+        worktreeManagerFactory: () => wt,
+        getIssueUpdater: () => issueUpdater,
+        backendSyncRunner: async (cmd) => ({ command: cmd.join(' '), code: 1, output: 'FAILED: Docker is not running' }),
+      });
+      expect(started.status).toBe('stopped_backend_sync');
+      expect(started.reasons[0]).toContain('FAILED: Docker is not running');
+      expect(started.worktreePath).toBeUndefined();
+      expect(wt.created).toEqual([]);
+      expect(issueUpdater.transitionAttempts).toEqual([]);
+    });
+  });
+
   it('startExecution reports no_eligible_task exactly like runExecution does, with no worktree created', async () => {
     handle = await createTestDb();
     const started = await startExecution({

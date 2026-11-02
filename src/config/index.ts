@@ -39,6 +39,27 @@ const ConfigSchema = z.object({
     repoLocalPaths: z.record(z.string(), z.string()).default({}),
     // Default branch per "owner/repo", if not "main".
     repoDefaultBranches: z.record(z.string(), z.string()).default({}),
+    // "owner/repo" -> the command that brings that repo's local backend up
+    // to date (e.g. a frontend whose headless CMS runs in Docker: pull the
+    // backend's latest dev branch, restart its containers, apply config).
+    // exec-start runs it before every new task for that repo, so work never
+    // starts against a stale or stopped backend. The command is yours to
+    // choose — nothing is inferred about what or where the backend is.
+    // Repos without an entry are unaffected. See backendSync.ts.
+    backendSync: z
+      .record(
+        z.string(),
+        z.object({
+          command: z.array(z.string()).min(1), // e.g. ["/path/to/update-backend.sh"]
+          cwd: z.string().optional(),
+          timeoutMs: z.number().int().positive().default(600_000),
+          // "warn" (default): report a failure and continue the task against
+          // whatever backend is there. "stop": don't start the task.
+          onFailure: z.enum(['warn', 'stop']).default('warn'),
+          description: z.string().optional(), // shown in progress output, e.g. "Drupal backend (DDEV)"
+        }),
+      )
+      .optional(),
     // "owner/repo" -> how to boot that app locally, for the optional
     // screenshot step in Engineering Execution. Screenshot capture is
     // opt-OUT, not opt-in: any approved/mapped repo gets a best-effort

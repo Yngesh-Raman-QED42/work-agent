@@ -87,7 +87,9 @@ prose process for a session to reconstruct by hand each time (see `CLAUDE.md`, w
 live session actually reads).
 
 1. `exec-start <KEY>` — resolves the repo from config, checks eligibility, creates the isolated
-   worktree off the correct base branch, prints the implementation prompt. Persists everything
+   worktree off the correct base branch, prints the implementation prompt. If the repo has a
+   `github.backendSync` entry, it first runs that command to bring the project's local backend
+   up to date (latest dev code, containers started) — see the config section below. Persists everything
    `exec-finish` needs as `.work-agent/execution-state.json` inside the worktree itself (see
    `src/agents/engineeringExecution/executionState.ts`) — no database schema needed for the
    handoff. Also moves the Jira ticket to whatever "in progress"-equivalent status its own
@@ -290,6 +292,23 @@ example:
   target the wrong branch once already.
   ```json
   "repoDefaultBranches": { "your-org/your-repo": "main" }
+  ```
+
+- **`github.backendSync`** *(optional)* — for a frontend that needs a local backend (e.g. a
+  headless CMS in Docker): the command that brings that backend up to date. `exec-start` runs it
+  before every new task for that repo — after the eligibility check, before the worktree and the
+  Jira transition — so work never starts against a stale or stopped backend. The command is
+  entirely yours (a script, `make`, `docker compose ...`); nothing about the backend is inferred.
+  `onFailure: "warn"` (default) reports a failure and carries on; `"stop"` doesn't start the task.
+  ```json
+  "backendSync": {
+    "your-org/your-repo": {
+      "command": ["/absolute/path/to/update-backend.sh"],
+      "timeoutMs": 900000,
+      "onFailure": "warn",
+      "description": "CMS backend (Docker)"
+    }
+  }
   ```
 
 - **`github.previewRecipes`** *(optional)* — how to boot that repo's own dev server for the

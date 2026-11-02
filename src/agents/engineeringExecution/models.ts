@@ -33,6 +33,7 @@ export interface GateDecision {
 export type ExecutionStatus =
   | 'opened_pr'
   | 'stopped_ambiguous'
+  | 'stopped_backend_sync'
   | 'stopped_failed_checks'
   | 'no_eligible_task';
 

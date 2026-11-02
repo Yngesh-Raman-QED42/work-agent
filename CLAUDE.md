@@ -18,9 +18,11 @@ work-agent exec-start <TICKET_KEY>
 ```
 This alone: reads `work-agent.config.json` for the repo mapping (never guesses, never searches
 the filesystem for a checkout — if the mapping is missing it tells you and stops), checks
-eligibility against the real autonomy policy, creates an isolated git worktree off the *correct*
-base branch from config, and prints the exact worktree path plus the implementation prompt. If
-the ticket isn't eligible, it says why and stops — nothing else happens.
+eligibility against the real autonomy policy, brings the project's local backend up to date if
+the repo has a `github.backendSync` entry (e.g. latest dev pull + containers started), creates an
+isolated git worktree off the *correct* base branch from config, and prints the exact worktree
+path plus the implementation prompt. If the ticket isn't eligible, it says why and stops — nothing
+else happens.
 
 **Then implement the fix yourself**, directly, in that exact worktree path — inspect existing
 code first, smallest change that satisfies the ticket, nothing else. This is the one step that

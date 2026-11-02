@@ -4,7 +4,9 @@
     "ignoredKeys": []
   },
   "github": {
-    "approvedRepos": ["your-org/your-repo"],
+    "approvedRepos": [
+      "your-org/your-repo"
+    ],
     "repoMap": {
       "PROJ": "your-org/your-repo"
     },
@@ -16,7 +18,11 @@
     },
     "previewRecipes": {
       "your-org/your-repo": {
-        "startCommand": ["npm", "run", "dev"],
+        "startCommand": [
+          "npm",
+          "run",
+          "dev"
+        ],
         "port": 3000,
         "readyPath": "/",
         "readyTimeoutMs": 120000,
@@ -26,6 +32,16 @@
           "email": "test-user@example.com",
           "submitSelector": "text=Sign in (test)"
         }
+      }
+    },
+    "backendSync": {
+      "your-org/your-repo": {
+        "command": [
+          "/absolute/path/to/update-backend.sh"
+        ],
+        "timeoutMs": 900000,
+        "onFailure": "warn",
+        "description": "CMS backend (Docker)"
       }
     }
   },
