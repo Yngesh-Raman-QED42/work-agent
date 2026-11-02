@@ -4,6 +4,7 @@ import { loadConfig } from '../config/index.js';
 import { Scheduler } from './scheduler.js';
 import { standardJobs } from './jobs.js';
 import { buildConnectors } from '../integrations/factory.js';
+import { GhCliAssetBranchGitHub } from '../agents/engineeringExecution/assetBranchCleanup.js';
 
 /**
  * NOT started automatically by anything in this codebase. Run explicitly
@@ -17,7 +18,12 @@ async function main() {
   const { connectors, resolved } = buildConnectors(config, 'auto');
   console.log(`Connectors: jira=${resolved.jira}, github=${resolved.github}, slack=${resolved.slack}`);
 
-  const scheduler = new Scheduler(db, standardJobs({ db, connectors, ignoredKeys: config.jira.ignoredKeys }));
+  const scheduler = new Scheduler(db, standardJobs({
+      db,
+      connectors,
+      ignoredKeys: config.jira.ignoredKeys,
+      assetCleanup: { repos: config.github.approvedRepos, github: new GhCliAssetBranchGitHub() },
+    }));
   await scheduler.ensureRegistered();
 
   console.log('Scheduler running. Ticking every 60s. Ctrl+C to stop.');

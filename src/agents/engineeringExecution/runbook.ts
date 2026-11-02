@@ -1,4 +1,5 @@
 import { runBackendSync, type BackendSyncRunner } from './backendSync.js';
+import { cleanupAssetBranches, type AssetBranchGitHub } from './assetBranchCleanup.js';
 import { eq } from 'drizzle-orm';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -118,6 +119,10 @@ export interface StartExecutionDeps {
   onProgress?: (message: string) => void;
   // Test seam for github.backendSync — production runs the real command.
   backendSyncRunner?: BackendSyncRunner;
+  // When given (the CLI passes the real gh-backed one), exec-start also
+  // removes this repo's screenshot asset branches whose PRs are all merged
+  // or closed — housekeeping, so it never blocks or fails the task.
+  assetBranchGitHub?: AssetBranchGitHub;
 }
 
 export type StartExecutionStatus = 'started' | 'stopped_ambiguous' | 'stopped_backend_sync' | 'no_eligible_task';
@@ -214,6 +219,19 @@ export async function startExecution(deps: StartExecutionDeps): Promise<StartExe
       return { status: 'stopped_backend_sync', task, repo, reasons: [reason], backendSync };
     } else {
       report(`WARNING: updating the local ${label} failed; continuing against whatever is running now:\n${sync.outputTail}`);
+    }
+  }
+
+  if (deps.assetBranchGitHub) {
+    try {
+      const decisions = await cleanupAssetBranches([repoFullName(repo)], deps.assetBranchGitHub);
+      const deleted = decisions.filter((d) => d.action === 'deleted');
+      if (decisions.length > 0) await audit.log('execution_asset_branches_cleaned', { repo: repoFullName(repo), decisions });
+      if (deleted.length > 0) {
+        report(`Removed ${deleted.length} screenshot branch(es) of merged/closed PRs: ${deleted.map((d) => d.branch).join(', ')}.`);
+      }
+    } catch (err) {
+      await audit.log('execution_asset_branch_cleanup_failed', { repo: repoFullName(repo), error: String(err) });
     }
   }
 

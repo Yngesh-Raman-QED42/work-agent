@@ -239,6 +239,41 @@ describe('startExecution / finishExecution (the split exec-start / exec-finish u
     });
   });
 
+  it('removes screenshot branches of merged PRs at exec-start, and a cleanup failure never blocks the task', async () => {
+    handle = await createTestDb();
+    const deleted: string[] = [];
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      assetBranchGitHub: {
+        listBranches: async (_r, prefix) => (prefix === 'pr-assets/' ? ['pr-assets/old'] : []),
+        listPrs: async () => [{ number: 3, state: 'MERGED', body: 'https://github.com/org/repo/raw/pr-assets/old/a.png' }],
+        deleteBranch: async (_r, b) => {
+          deleted.push(b);
+        },
+      },
+    });
+    expect(started.status).toBe('started');
+    expect(deleted).toEqual(['pr-assets/old']);
+
+    const second = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask('PROJ-2')],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      assetBranchGitHub: {
+        listBranches: () => Promise.reject(new Error('GitHub is down')),
+        listPrs: async () => [],
+        deleteBranch: async () => {},
+      },
+    });
+    expect(second.status).toBe('started');
+  });
+
   it('startExecution reports no_eligible_task exactly like runExecution does, with no worktree created', async () => {
     handle = await createTestDb();
     const started = await startExecution({

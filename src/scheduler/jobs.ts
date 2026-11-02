@@ -6,11 +6,16 @@ import { generateEndOfDay } from '../agents/endOfDay/runbook.js';
 import { generateWeeklySummary } from '../agents/weeklySummary/runbook.js';
 import { runSlackIntelligence } from '../agents/slackIntelligence/runbook.js';
 import type { JobDefinition } from './scheduler.js';
+import { cleanupAssetBranches, type AssetBranchGitHub } from '../agents/engineeringExecution/assetBranchCleanup.js';
+import { AuditLog } from '../pipeline/audit.js';
 
 export interface StandardJobsDeps {
   db: AnyDb;
   connectors: { slack: SlackConnector; jira: JiraConnector; github: GitHubConnector };
   ignoredKeys?: WorkAgentConfig['jira']['ignoredKeys'];
+  // Removes PR screenshot asset branches once their PRs are merged/closed
+  // (see assetBranchCleanup.ts). Omitted = job not registered.
+  assetCleanup?: { repos: string[]; github: AssetBranchGitHub };
 }
 
 /**
@@ -48,6 +53,18 @@ export function standardJobs(deps: StandardJobsDeps): JobDefinition[] {
         await generateEndOfDay(deps.db);
       },
     },
+    ...(deps.assetCleanup
+      ? [
+          {
+            id: 'asset_branch_cleanup',
+            intervalMinutes: 6 * 60,
+            run: async () => {
+              const decisions = await cleanupAssetBranches(deps.assetCleanup!.repos, deps.assetCleanup!.github);
+              await new AuditLog(deps.db).log('asset_branch_cleanup', { decisions });
+            },
+          },
+        ]
+      : []),
     {
       id: 'weekly_summary',
       intervalMinutes: 7 * 24 * 60,

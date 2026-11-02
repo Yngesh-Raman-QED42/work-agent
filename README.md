@@ -89,7 +89,11 @@ live session actually reads).
 1. `exec-start <KEY>` — resolves the repo from config, checks eligibility, creates the isolated
    worktree off the correct base branch, prints the implementation prompt. If the repo has a
    `github.backendSync` entry, it first runs that command to bring the project's local backend
-   up to date (latest dev code, containers started) — see the config section below. Persists everything
+   up to date (latest dev code, containers started) — see the config section below. It also
+   removes that repo's PR screenshot branches (`work-agent/screenshots/*`, `pr-assets/*`) once
+   every PR linking to them is merged or closed (`assetBranchCleanup.ts`; best-effort, never
+   blocks the task). The same cleanup runs as a 6-hourly scheduler job and on demand with
+   `work-agent cleanup-asset-branches [--dry-run]`. Persists everything
    `exec-finish` needs as `.work-agent/execution-state.json` inside the worktree itself (see
    `src/agents/engineeringExecution/executionState.ts`) — no database schema needed for the
    handoff. Also moves the Jira ticket to whatever "in progress"-equivalent status its own

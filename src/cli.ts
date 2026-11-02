@@ -20,6 +20,7 @@ import { PlaywrightScreenshotCapture } from './agents/engineeringExecution/scree
 import { LiveJiraIssueUpdater } from './integrations/jira/issueUpdater.js';
 import { executionTasks } from './db/schema.js';
 import { eq } from 'drizzle-orm';
+import { cleanupAssetBranches, GhCliAssetBranchGitHub } from './agents/engineeringExecution/assetBranchCleanup.js';
 
 function flagValue(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -163,6 +164,7 @@ async function cmdExecStart(args: string[]) {
     candidates: [task],
     policy: new AutonomyPolicy(),
     getIssueUpdater: () => new LiveJiraIssueUpdater(),
+    assetBranchGitHub: new GhCliAssetBranchGitHub(),
     onProgress: (msg) => console.log(`[${new Date().toLocaleTimeString()}] ${msg}`),
   });
 
@@ -184,6 +186,18 @@ async function cmdExecStart(args: string[]) {
   console.log(`\n--- Prompt ---\n${started.prompt}\n--- end prompt ---`);
   console.log(`\nWhen done: work-agent exec-finish ${key} --summary "<what you changed and why>"`);
   console.log(`If you have to stop early: work-agent exec-finish ${key} --failed "<why>"`);
+}
+
+/** Removes PR screenshot asset branches whose PRs are all merged/closed, across approved repos. */
+async function cmdCleanupAssetBranches(args: string[]) {
+  const config = loadConfig();
+  const dryRun = args.includes('--dry-run');
+  const github = new GhCliAssetBranchGitHub();
+  if (dryRun) github.deleteBranch = async () => {}; // report what would be deleted, touch nothing
+  const decisions = await cleanupAssetBranches(config.github.approvedRepos, github);
+  if (dryRun) console.log('Dry run: nothing is deleted. "deleted" below means "would be deleted".');
+  if (decisions.length === 0) console.log('No screenshot asset branches found.');
+  for (const d of decisions) console.log(`${d.action.padEnd(7)} ${d.repo}  ${d.branch}  (${d.reason})`);
 }
 
 async function cmdExecFinish(args: string[]) {
@@ -263,6 +277,9 @@ async function main() {
     case 'log-time':
       await cmdLogTime(rest);
       break;
+    case 'cleanup-asset-branches':
+      await cmdCleanupAssetBranches(rest);
+      break;
     case 'exec-start':
       await cmdExecStart(rest);
       break;
@@ -282,7 +299,7 @@ async function main() {
     }
     default:
       console.error(
-        'Usage: work-agent <run [--mode auto|mock|live]|end-of-day|weekly-summary|status|log-time (--minutes <n>|--hours <n>) [--ticket KEY] [--jira]|exec-start <KEY>|exec-finish <KEY> (--summary "..."|--failed "...")|approvals list|approvals approve <id>|approvals reject <id>>',
+        'Usage: work-agent <run [--mode auto|mock|live]|end-of-day|weekly-summary|status|log-time (--minutes <n>|--hours <n>) [--ticket KEY] [--jira]|exec-start <KEY>|exec-finish <KEY> (--summary "..."|--failed "...")|cleanup-asset-branches [--dry-run]|approvals list|approvals approve <id>|approvals reject <id>>',
       );
       process.exit(1);
   }
