@@ -280,10 +280,17 @@ that project, never a guess (`src/dashboard/projectOverview.ts`):
   render time to show whether something is actually listening right now, not just whether a port
   is configured.
 - **Docker containers** — one `docker ps` for the whole dashboard render (never one per project),
-  matched against each project's own repo directory name. Best-effort and heuristic by nature — a
-  tool that names its containers differently from the repo directory (DDEV, in particular, names
-  them after its own configured project name, not the checkout's directory name) won't match, and
-  deliberately shows nothing rather than guess wrong.
+  matched three independent ways: the frontend repo's own directory name; the backend's own
+  directory name, when `backendSync[repo].localPath` says where that is (a headless setup's
+  backend is almost always a separate checkout, unrelated to the frontend's own path); and, when
+  that backend path has a `.ddev/config.yaml`, an *exact* match against DDEV's own configured
+  project name rather than a directory-name guess — DDEV always names its containers
+  `ddev-<project>-<service>`, and that project name is frequently not the checkout's own directory
+  name at all (confirmed live: UNLSD's backend checkout is `drupal-headless-portal-cb5`, its real
+  DDEV project is `learningskillsdata`, and only the config-file match finds
+  `ddev-learningskillsdata-web`/`-db`; the directory-name heuristic alone never would have).
+  Everything's deduped by container name and still purely best-effort — a repo with no
+  `backendSync.localPath` and no directory-name match just shows nothing, never a wrong guess.
 - **Backend description** — `config.github.backendSync[repo].description` when present (e.g.
   `"Drupal backend (DDEV)"`), shown as a second box in a simple Browser → Frontend → Backend
   diagram; only ever as many boxes as there's real config for, never a fabricated layer.

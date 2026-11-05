@@ -41,7 +41,8 @@
         ],
         "timeoutMs": 900000,
         "onFailure": "warn",
-        "description": "CMS backend (Docker)"
+        "description": "CMS backend (Docker)",
+        "localPath": "/absolute/path/to/the/backend/checkout (omit if your-repo IS the backend)"
       }
     }
   },

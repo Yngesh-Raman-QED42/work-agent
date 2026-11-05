@@ -57,6 +57,15 @@ const ConfigSchema = z.object({
           // whatever backend is there. "stop": don't start the task.
           onFailure: z.enum(['warn', 'stop']).default('warn'),
           description: z.string().optional(), // shown in progress output, e.g. "Drupal backend (DDEV)"
+          // The backend's own checkout, when it's a separate directory from
+          // the frontend repo above (a headless setup usually is — e.g.
+          // UNLSD's Drupal backend lives in its own directory, nothing to
+          // do with repoLocalPaths' frontend checkout). Only used by the
+          // dashboard's "Project structure" card to find the backend's own
+          // running Docker containers (via its .ddev/config.yaml project
+          // name, when it's a DDEV project) — optional, and nothing else
+          // in Work Agent reads it.
+          localPath: z.string().optional(),
         }),
       )
       .optional(),

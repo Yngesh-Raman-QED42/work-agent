@@ -115,28 +115,75 @@ export async function listDockerContainers(): Promise<DockerContainer[]> {
   }
 }
 
-/** Heuristic, best-effort name match (e.g. DDEV names containers
- * "ddev-<project>-web", a plain docker-compose project usually names them
- * after its own directory) — matched by the repo's own local directory
- * name, alphanumeric-only so "LearningSkillsAndDataFE" still matches
- * "learningskillsanddatafe" regardless of case/punctuation differences in
- * how a given tool derives its container names. Imperfect by nature; a
- * project with no match just shows no Docker status, never a wrong one. */
-export function matchDockerContainers(containers: DockerContainer[], repoLocalPath: string): DockerContainer[] {
-  const needle = path.basename(repoLocalPath).toLowerCase().replace(/[^a-z0-9]/g, '');
+/** Heuristic, best-effort name match (a plain docker-compose project
+ * usually names its containers after its own directory) — matched by the
+ * given local directory's own name, alphanumeric-only so
+ * "LearningSkillsAndDataFE" still matches "learningskillsanddatafe"
+ * regardless of case/punctuation differences in how a given tool derives
+ * its container names. Imperfect by nature; a project with no match just
+ * shows no Docker status here, never a wrong one — see
+ * matchDdevContainers below for the exact-match case this misses. */
+export function matchDockerContainers(containers: DockerContainer[], localPath: string): DockerContainer[] {
+  const needle = path.basename(localPath).toLowerCase().replace(/[^a-z0-9]/g, '');
   if (!needle) return [];
   return containers.filter((c) => c.name.toLowerCase().replace(/[^a-z0-9]/g, '').includes(needle));
+}
+
+/** DDEV always names its own containers "ddev-<project>-<service>" (web,
+ * db, etc.) — a stable, documented convention, not a guess — and the
+ * project name is whatever ".ddev/config.yaml" declares, which is
+ * frequently NOT the same as the checkout's own directory name (exactly
+ * the case that motivated this: UNLSD's backend checkout is
+ * "drupal-headless-portal-cb5", its DDEV project is "learningskillsdata",
+ * and its containers are "ddev-learningskillsdata-*" — matchDockerContainers
+ * above, which only ever looks at the directory name, was never going to
+ * find these). A minimal line-scan for just the "name:" field rather than
+ * pulling in a full YAML parser for one value. */
+export function readDdevProjectName(localPath: string): string | null {
+  const configPath = path.join(localPath, '.ddev', 'config.yaml');
+  if (!existsSync(configPath)) return null;
+  try {
+    const text = readFileSync(configPath, 'utf-8');
+    const match = text.match(/^name:\s*(\S+)\s*$/m);
+    return match ? match[1]!.replace(/^['"]|['"]$/g, '') : null;
+  } catch {
+    return null;
+  }
+}
+
+export function matchDdevContainers(containers: DockerContainer[], ddevProjectName: string): DockerContainer[] {
+  const prefix = `ddev-${ddevProjectName}-`;
+  return containers.filter((c) => c.name.startsWith(prefix));
 }
 
 export async function buildProjectOverview(repo: string, config: WorkAgentConfig, allContainers: DockerContainer[]): Promise<ProjectOverview> {
   const localPath = config.github.repoLocalPaths[repo];
   const techStack = localPath ? detectTechStack(localPath) : [];
-  const backendDescription = config.github.backendSync?.[repo]?.description;
+  const backendSync = config.github.backendSync?.[repo];
+  const backendDescription = backendSync?.description;
   const recipe = config.github.previewRecipes[repo];
   const port = recipe ? recipe.port : undefined;
   const localUrl = port ? `http://localhost:${port}` : undefined;
   const localUrlLive = port ? await probePort(port) : false;
-  const dockerContainers = localPath ? matchDockerContainers(allContainers, localPath) : [];
+
+  // Three independent ways a container can belong to this project — the
+  // frontend repo's own directory name, the backend's own directory name
+  // (when backendSync.localPath says where that is — a headless setup's
+  // backend is almost always a completely separate checkout, nothing to
+  // do with repoLocalPaths' frontend path), and, for a DDEV backend
+  // specifically, an exact match on its real configured project name
+  // rather than a directory-name guess. Deduped by container name, since
+  // the same container can legitimately match more than one of these.
+  const matchedByName = new Map<string, DockerContainer>();
+  for (const c of localPath ? matchDockerContainers(allContainers, localPath) : []) matchedByName.set(c.name, c);
+  if (backendSync?.localPath) {
+    for (const c of matchDockerContainers(allContainers, backendSync.localPath)) matchedByName.set(c.name, c);
+    const ddevName = readDdevProjectName(backendSync.localPath);
+    if (ddevName) {
+      for (const c of matchDdevContainers(allContainers, ddevName)) matchedByName.set(c.name, c);
+    }
+  }
+  const dockerContainers = [...matchedByName.values()];
 
   return { repo, localPath, techStack, backendDescription, localUrl, localUrlLive, dockerContainers };
 }
