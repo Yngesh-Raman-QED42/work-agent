@@ -1,8 +1,25 @@
 import { describe, expect, it, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createTestDb, type TestDbHandle } from '../../src/test-utils/db.js';
 import { renderDashboard } from '../../src/dashboard/render.js';
 import { ApprovalsStore } from '../../src/shared/approvals.js';
 import { slackSignals, workItems, archivedTickets } from '../../src/db/schema.js';
+import type { WorkAgentConfig } from '../../src/config/index.js';
+
+// No projects mapped — every ticket lands in the one Miscellaneous bucket,
+// which (since there's nothing to show tabs for) renders exactly like the
+// page did before project tabs existed. Tests that specifically exercise
+// tabs/project grouping build their own config with a real repoMap entry.
+const DEFAULT_TEST_CONFIG: WorkAgentConfig = {
+  jira: { myProjects: [], ignoredKeys: [] },
+  github: { approvedRepos: [], repoMap: {}, repoLocalPaths: {}, repoDefaultBranches: {}, previewRecipes: {} },
+  slack: { relevantChannels: [] },
+  engineeringExecution: { openPrAsDraft: true },
+  communication: { autoSendRoutine: false },
+  dashboard: { terminalOs: 'ubuntu' },
+};
 
 let handle: TestDbHandle | null = null;
 afterEach(async () => {
@@ -13,14 +30,14 @@ afterEach(async () => {
 describe('renderDashboard', () => {
   it('renders without data', async () => {
     handle = await createTestDb();
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).toContain('Work Agent');
     expect(html).toContain('All clear — nothing waiting on a decision.');
   });
 
   it('shows no search box for an empty panel, but does once it has content', async () => {
     handle = await createTestDb();
-    const empty = await renderDashboard(handle.db);
+    const empty = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     // The class name legitimately appears in the static CSS/JS regardless —
     // check for an actual rendered <input>, not just the substring.
     expect(empty).not.toContain('<input type="text" class="panel-search"');
@@ -29,7 +46,7 @@ describe('renderDashboard', () => {
       id: 'a1', source: 'observation', action: 'review_pull_request', target: 'org/repo#1',
       context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
     });
-    const withData = await renderDashboard(handle.db);
+    const withData = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(withData).toContain('Search pending approvals…');
   });
 
@@ -47,7 +64,7 @@ describe('renderDashboard', () => {
     });
     await store.resolve('a-rejected', 'rejected');
 
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).toContain('<h2>Approval history</h2><span class="count">2</span>');
     expect(html).toContain('approved');
     expect(html).toContain('rejected');
@@ -68,7 +85,7 @@ describe('renderDashboard', () => {
       consequenceIfApproved: 'x',
       recommendedAction: 'review it',
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).toContain('Review this pull request'); // humanized, not the raw action id
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('&lt;script&gt;');
@@ -89,7 +106,7 @@ describe('renderDashboard', () => {
       consequenceIfApproved: 'x',
       recommendedAction: 'x',
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).toContain('Some future action type');
   });
 
@@ -107,7 +124,7 @@ describe('renderDashboard', () => {
       firstSeenAt: new Date(),
       updatedAt: new Date(),
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     // The descriptive summary is the prominent heading now, not the bare key.
     expect(html).toContain('<div class="item-title">Fix the thing</div>');
     expect(html).toContain('data-copy="PROJ-9"');
@@ -154,7 +171,7 @@ describe('renderDashboard', () => {
       firstSeenAt: now,
       updatedAt: now,
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     // The conflicting PR's own line ends cleanly...
     expect(html).toContain('— PROJ-10: fix</div>');
     // ...followed by its own conflict row: the badge and a "Resolve
@@ -192,7 +209,7 @@ describe('renderDashboard', () => {
       },
     ]);
 
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     // One conversation card, not two raw message rows.
     expect(html).toContain('<h2>Slack — needs attention</h2><span class="count">1</span>');
     expect(html).toContain('Waiting on your response');
@@ -221,7 +238,7 @@ describe('renderDashboard', () => {
       firstSeenAt: now,
       updatedAt: now,
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     const sectionMatch = html.match(/<details class="category" *(open)? *>\s*<summary><span>Waiting on others<\/span>/);
     expect(sectionMatch).not.toBeNull();
     expect(sectionMatch![1]).toBe('open');
@@ -229,7 +246,7 @@ describe('renderDashboard', () => {
 
   it('"Active work items" renders before "Needs your decision" in the page — the requested reorder', async () => {
     handle = await createTestDb();
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html.indexOf('<h2>Active work items</h2>')).toBeLessThan(html.indexOf('<h2>Needs your decision</h2>'));
     expect(html.indexOf('<h2>Needs your decision</h2>')).toBeLessThan(html.indexOf('<h2>Approval history</h2>'));
   });
@@ -256,7 +273,7 @@ describe('renderDashboard', () => {
       firstSeenAt: now,
       updatedAt: now,
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).toContain('<h2>Recently merged</h2><span class="count">1</span>');
     expect(html).toContain('Fix the thing');
     expect(html).toContain('org/repo#42');
@@ -298,7 +315,7 @@ describe('renderDashboard', () => {
       firstSeenAt: now,
       updatedAt: now,
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).toContain('<h2>Active work items</h2><span class="count">1</span>');
     expect(html).toContain('data-key="PROJ-3" data-action="work"');
     expect(html).toContain('data-key="PROJ-3" data-action="estimate"');
@@ -330,7 +347,7 @@ describe('renderDashboard', () => {
       id: 'exec-log-time:PROJ-4', source: 'engineering_execution', action: 'log_execution_time', target: 'PROJ-4',
       context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).not.toContain('data-key="PROJ-4" data-action="work"');
     expect(html).not.toContain('data-key="PROJ-4" data-action="estimate"');
   });
@@ -350,7 +367,7 @@ describe('renderDashboard', () => {
       firstSeenAt: now,
       updatedAt: now,
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).toContain('data-endpoint="/archive-ticket"');
     expect(html).toContain('key=PROJ-20&amp;summary=Not%20going%20anywhere&amp;url=http%3A%2F%2Fx%2FPROJ-20');
     // Icon-only — no visible label text inside the button.
@@ -376,7 +393,7 @@ describe('renderDashboard', () => {
       id: 'create-branch:PROJ-23', source: 'task_intelligence', action: 'create_branch_or_pr', target: 'PROJ-23',
       context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).toContain('key=PROJ-23&amp;summary=Needs%20a%20decision&amp;url=http%3A%2F%2Fx%2FPROJ-23');
   });
 
@@ -386,7 +403,7 @@ describe('renderDashboard', () => {
       id: 'review:org/repo#9', source: 'pr_monitoring', action: 'review_pull_request', target: 'org/repo#9',
       targetUrl: 'http://x/pr/9', context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).not.toContain('data-endpoint="/archive-ticket"');
   });
 
@@ -415,8 +432,8 @@ describe('renderDashboard', () => {
 
     // Two separate renders — nothing in-memory carries state between them,
     // so this stands in for "still gone after a dashboard restart."
-    const html1 = await renderDashboard(handle.db);
-    const html2 = await renderDashboard(handle.db);
+    const html1 = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
+    const html2 = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     for (const html of [html1, html2]) {
       // It's still listed in the Archived panel (checked below) — what
       // must be gone is its row in Active work items specifically, which
@@ -435,7 +452,7 @@ describe('renderDashboard', () => {
     handle = await createTestDb();
     const now = new Date();
     await handle.db.insert(archivedTickets).values({ id: 'PROJ-22', summary: 'Old noise', url: 'http://x/PROJ-22', archivedAt: now });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     const archivedPanelIdx = html.indexOf('<h2>Archived</h2>');
     // The <details> right after the Archived panel heading has no "open"
     // attribute — collapsed unless the person expands it themselves.
@@ -466,7 +483,7 @@ describe('renderDashboard', () => {
       firstSeenAt: now,
       updatedAt: now,
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     // The ticket itself still legitimately shows elsewhere (Active work
     // items) — what matters here is specifically the "Recently merged"
     // panel's own count staying at 0, not the PR's title never appearing
@@ -486,9 +503,158 @@ describe('renderDashboard', () => {
       id: 'review:1', source: 'observation', action: 'review_pull_request', target: 'org/repo#1',
       context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
     });
-    const html = await renderDashboard(handle.db);
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
     expect(html).toContain('data-key="PROJ-1" data-action="estimate"');
     expect(html).toContain('data-key="PROJ-1" data-action="work"');
     expect(html).not.toContain('data-key="org/repo#1"');
+  });
+});
+
+describe('renderDashboard — project tabs', () => {
+  function configWithProject(overrides: Partial<WorkAgentConfig['github']> = {}): WorkAgentConfig {
+    return {
+      ...DEFAULT_TEST_CONFIG,
+      github: {
+        ...DEFAULT_TEST_CONFIG.github,
+        repoMap: { UNLSD: 'org/unlsd-repo' },
+        ...overrides,
+      },
+    };
+  }
+
+  it('with no project mapped in config, no tab buttons render and the single Miscellaneous pane is always visible — reads the same as the page before this feature existed', async () => {
+    handle = await createTestDb();
+    const html = await renderDashboard(handle.db, DEFAULT_TEST_CONFIG);
+    expect(html).not.toContain('<button type="button" class="project-tab"');
+    expect(html).not.toContain('<div class="project-tabs"');
+    const paneMatches = html.match(/data-project-pane="MISC"/g) ?? [];
+    expect(paneMatches).toHaveLength(1);
+    expect(html).not.toContain('data-project-pane="MISC" hidden');
+  });
+
+  it('a ticket whose Jira project is mapped lands in that project\'s own tab/pane, not Miscellaneous', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(workItems).values({
+      id: 'UNLSD-10',
+      category: 'needs_action',
+      urgency: 'medium',
+      jiraKey: 'UNLSD-10',
+      jira: { key: 'UNLSD-10', project: 'UNLSD', summary: 'Build the homepage', status: 'To Do', statusCategory: 'To Do', priority: 'Medium', updated: now.toISOString(), url: 'http://x/UNLSD-10' },
+      prs: [], slackMessages: [], reasons: [], firstSeenAt: now, updatedAt: now,
+    });
+    const html = await renderDashboard(handle.db, configWithProject());
+
+    expect(html).toContain('>UNLSD<');
+    expect(html).toContain('>Miscellaneous<');
+    const unlsdPaneStart = html.indexOf('data-project-pane="UNLSD"');
+    const miscPaneStart = html.indexOf('data-project-pane="MISC"');
+    expect(unlsdPaneStart).toBeGreaterThan(-1);
+    expect(miscPaneStart).toBeGreaterThan(-1);
+    // The ticket's row sits between the UNLSD pane's own start and the
+    // next pane's start, not inside Miscellaneous.
+    const ticketIdx = html.indexOf('data-ticket-key="UNLSD-10"');
+    expect(ticketIdx).toBeGreaterThan(unlsdPaneStart);
+    expect(ticketIdx).toBeLessThan(miscPaneStart);
+  });
+
+  it('a ticket whose Jira project has no mapped repo (e.g. QGP, QCBP — tracking only) falls into Miscellaneous', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(workItems).values({
+      id: 'QGP-5',
+      category: 'needs_action',
+      urgency: 'medium',
+      jiraKey: 'QGP-5',
+      jira: { key: 'QGP-5', project: 'QGP', summary: 'Track this', status: 'To Do', statusCategory: 'To Do', priority: 'Medium', updated: now.toISOString(), url: 'http://x/QGP-5' },
+      prs: [], slackMessages: [], reasons: [], firstSeenAt: now, updatedAt: now,
+    });
+    const html = await renderDashboard(handle.db, configWithProject());
+    const miscPaneStart = html.indexOf('data-project-pane="MISC"');
+    const unlsdPaneStart = html.indexOf('data-project-pane="UNLSD"');
+    const ticketIdx = html.indexOf('data-ticket-key="QGP-5"');
+    expect(ticketIdx).toBeGreaterThan(miscPaneStart);
+    // MISC is the last pane, so nothing after it to bound against — just
+    // confirm it's not sitting inside the UNLSD pane instead.
+    expect(ticketIdx > unlsdPaneStart && ticketIdx < miscPaneStart).toBe(false);
+  });
+
+  it('a standalone PR item (no Jira ticket) still lands in its project\'s tab when the PR\'s repo is mapped', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(workItems).values({
+      id: 'pr:org/unlsd-repo#42',
+      category: 'waiting_on_others',
+      urgency: 'low',
+      jira: null,
+      prs: [{
+        repo: 'org/unlsd-repo', number: 42, title: 'Fix the layout', url: 'http://x/pr/42',
+        state: 'open', isDraft: false, branch: 'fix/layout', isAuthor: true,
+        reviewRequestedOfMe: false, reviewState: 'none', updatedAt: now.toISOString(),
+      }],
+      slackMessages: [], reasons: [], firstSeenAt: now, updatedAt: now,
+    });
+    const html = await renderDashboard(handle.db, configWithProject());
+    const unlsdPaneStart = html.indexOf('data-project-pane="UNLSD"');
+    const miscPaneStart = html.indexOf('data-project-pane="MISC"');
+    const prIdx = html.indexOf('org/unlsd-repo#42');
+    expect(prIdx).toBeGreaterThan(unlsdPaneStart);
+    expect(prIdx).toBeLessThan(miscPaneStart);
+  });
+
+  it('a pending approval targeting a real-project ticket key lands in that project\'s "Needs your decision"', async () => {
+    handle = await createTestDb();
+    await new ApprovalsStore(handle.db).file({
+      id: 'start-pr:UNLSD-20', source: 'observation', action: 'create_branch_or_pr', target: 'UNLSD-20',
+      context: {}, reasoning: 'x', riskLevel: 'low', consequenceIfApproved: 'x', recommendedAction: 'x',
+    });
+    const html = await renderDashboard(handle.db, configWithProject());
+    const unlsdPaneStart = html.indexOf('data-project-pane="UNLSD"');
+    const miscPaneStart = html.indexOf('data-project-pane="MISC"');
+    const approvalIdx = html.indexOf('UNLSD-20');
+    expect(approvalIdx).toBeGreaterThan(unlsdPaneStart);
+    expect(approvalIdx).toBeLessThan(miscPaneStart);
+  });
+
+  it('an archived ticket from a real project is bucketed there too, not dumped into Miscellaneous', async () => {
+    handle = await createTestDb();
+    await handle.db.insert(archivedTickets).values({ id: 'UNLSD-99', summary: 'Old noise', url: 'http://x/UNLSD-99', archivedAt: new Date() });
+    const html = await renderDashboard(handle.db, configWithProject());
+    const unlsdPaneStart = html.indexOf('data-project-pane="UNLSD"');
+    const miscPaneStart = html.indexOf('data-project-pane="MISC"');
+    const archivedIdx = html.lastIndexOf('UNLSD-99'); // the archived-list card, not the tab/pane marker itself
+    expect(archivedIdx).toBeGreaterThan(unlsdPaneStart);
+    expect(archivedIdx).toBeLessThan(miscPaneStart);
+  });
+
+  it('shows a "Project structure" overview card with real, detected facts for a mapped project — and none for Miscellaneous', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'overview-render-'));
+    writeFileSync(join(tmpDir, 'package.json'), JSON.stringify({ dependencies: { next: '1.0.0' } }));
+    try {
+      handle = await createTestDb();
+      const config = configWithProject({
+        repoLocalPaths: { 'org/unlsd-repo': tmpDir },
+        backendSync: { 'org/unlsd-repo': { command: ['true'], timeoutMs: 1000, onFailure: 'warn', description: 'Drupal backend (DDEV)' } },
+      });
+      const html = await renderDashboard(handle.db, config);
+      expect(html).toContain('Project structure');
+      expect(html).toContain('Next.js');
+      expect(html).toContain('Drupal backend (DDEV)');
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('tab labels show a per-tab count (active items + pending approvals)', async () => {
+    handle = await createTestDb();
+    const now = new Date();
+    await handle.db.insert(workItems).values({
+      id: 'UNLSD-11',
+      category: 'needs_action', urgency: 'medium', jiraKey: 'UNLSD-11',
+      jira: { key: 'UNLSD-11', project: 'UNLSD', summary: 'x', status: 'To Do', statusCategory: 'To Do', priority: 'Medium', updated: now.toISOString(), url: 'http://x/UNLSD-11' },
+      prs: [], slackMessages: [], reasons: [], firstSeenAt: now, updatedAt: now,
+    });
+    const html = await renderDashboard(handle.db, configWithProject());
+    expect(html).toMatch(/data-project-tab="UNLSD">UNLSD<span class="count">1<\/span>/);
   });
 });

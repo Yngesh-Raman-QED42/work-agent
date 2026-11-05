@@ -254,6 +254,44 @@ dialog (and anything half-typed in it) every 60 seconds with no way to prevent i
 small JS-driven refresh that checks whether the ticket dialog is open first, and just waits and
 checks again shortly if it is, instead of reloading out from under you.
 
+### Project tabs — working across more than one project at once
+
+A ticket's project key gets its own tab the moment it has a real mapped repo
+(`config.github.repoMap`) — there's an actual codebase, something to point "Active work items"/
+"Recently merged"/"Needs your decision"/"Archived" at for that project specifically. A project key
+with Jira tickets but no mapped repo (used purely for tracking/logging, not real delivery work —
+the two real examples this was built against: QGP, QCBP) falls into one shared "Miscellaneous" tab
+instead. This is the *only* rule, derived from config that already exists for an unrelated reason
+(repo resolution for Engineering Execution) — there's nothing to configure specifically for this,
+and a brand new real project gets its own tab automatically the moment someone adds it to
+`repoMap`. With nothing mapped at all (a fresh config), no tab bar renders and the page looks
+exactly like it did before this feature existed — see `projectKeyForWorkItem`/
+`projectKeyForApprovalTarget`/`projectKeyFromTicketKeyString` in `render.ts` for the actual
+bucketing (a standalone PR item with no Jira ticket behind it still lands in the right tab via its
+PR's own repo, not just via a Jira project key).
+
+Each real project's tab opens with a **"Project structure"** card — real, observed facts about
+that project, never a guess (`src/dashboard/projectOverview.ts`):
+- **Tech stack** — read directly from that repo's own `package.json` dependencies (a curated map
+  of well-known package names to labels — Next.js, Drizzle ORM, Tailwind, etc.); nothing here is
+  inferred or configured by hand, so it stays accurate as the project's own dependencies change.
+- **Local dev URL** — `http://localhost:<port>` from the repo's own `previewRecipes` entry (the
+  same config Engineering Execution's screenshot step already uses), with a real TCP probe at
+  render time to show whether something is actually listening right now, not just whether a port
+  is configured.
+- **Docker containers** — one `docker ps` for the whole dashboard render (never one per project),
+  matched against each project's own repo directory name. Best-effort and heuristic by nature — a
+  tool that names its containers differently from the repo directory (DDEV, in particular, names
+  them after its own configured project name, not the checkout's directory name) won't match, and
+  deliberately shows nothing rather than guess wrong.
+- **Backend description** — `config.github.backendSync[repo].description` when present (e.g.
+  `"Drupal backend (DDEV)"`), shown as a second box in a simple Browser → Frontend → Backend
+  diagram; only ever as many boxes as there's real config for, never a fabricated layer.
+
+Which tab is open is remembered client-side (sessionStorage, same mechanism as the per-panel
+search boxes above), so it survives the 60s auto-refresh instead of snapping back to the first tab
+every minute.
+
 Tests (no Docker needed — pglite is in-memory):
 
 ```bash

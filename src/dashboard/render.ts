@@ -6,6 +6,22 @@ import type { JiraIssue, GitHubPr } from '../models/types.js';
 import { summarizeConversations } from '../agents/slackIntelligence/conversationSummary.js';
 import { timeEntriesInRange, formatMinutes } from '../agents/workLog/timeEntry.js';
 import { isValidTicketKey } from './launchSession.js';
+import type { WorkAgentConfig } from '../config/index.js';
+import { listDockerContainers, buildProjectOverview, type ProjectOverview } from './projectOverview.js';
+
+// A Jira project key with a real mapped repo (work-agent.config.json's
+// github.repoMap) is "a project" in the sense this view means — there's an
+// actual codebase, a tech stack, maybe a local dev server/Docker setup to
+// show. A key with Jira tickets but no mapped repo (the user's own
+// examples: QGP, QCBP) is just used for tracking/logging, not real
+// delivery work with a codebase behind it — those fall into one shared
+// "Miscellaneous" bucket instead of each getting their own tab. This is
+// the ONLY rule, and it's derived from config already set for an entirely
+// different reason (repo resolution for Engineering Execution) — no
+// separate allowlist to maintain, and a brand new real project gets its
+// own tab automatically the moment it's mapped there.
+const MISC_PROJECT_KEY = 'MISC';
+const MISC_PROJECT_LABEL = 'Miscellaneous';
 
 const SLACK_CATEGORY_BADGE_CLASS: Record<string, string> = {
   urgent: 'risk-high',
@@ -179,7 +195,7 @@ function searchBox(placeholder: string): string {
   return `<div class="panel-search-wrap"><input type="text" class="panel-search" placeholder="${p}" aria-label="${p}"></div>`;
 }
 
-export async function renderDashboard(db: AnyDb): Promise<string> {
+export async function renderDashboard(db: AnyDb, config: WorkAgentConfig): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
   const [rawItems, rawPendingApprovals, resolvedApprovals, tasks, signals, latestBriefing, todayEntries, archived] = await Promise.all([
     db.select().from(workItems).orderBy(desc(workItems.updatedAt)).limit(100),
@@ -241,13 +257,6 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   );
   const displayItems = items.filter((item) => !mergedKeys.has(item.id));
 
-  const byCategory = new Map<string, typeof items>();
-  for (const item of displayItems) {
-    const list = byCategory.get(item.category) ?? [];
-    list.push(item);
-    byCategory.set(item.category, list);
-  }
-
   const urgencyRank: Record<string, number> = { high: 0, medium: 1, low: 2 };
   const highUrgencyCount = displayItems.filter((i) => i.urgency === 'high').length;
   const activeTaskCount = tasks.filter((t) => ACTIVE_TASK_STATUSES.has(t.status)).length;
@@ -255,34 +264,90 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   const flaggedConvoCount = conversations.filter((c) => c.topCategory !== 'irrelevant' && c.topCategory !== 'informational').length;
   const minutesToday = todayEntries.reduce((sum, e) => sum + e.minutes, 0);
 
-  const workItemSections = CATEGORY_ORDER.map((category) => {
-    const list = byCategory.get(category);
-    if (!list || list.length === 0) return '';
-    list.sort((a, b) => (urgencyRank[a.urgency] ?? 9) - (urgencyRank[b.urgency] ?? 9));
-    const rows = list
-      .map((item) => {
-        const jira = item.jira as JiraIssue | null;
-        const prs = item.prs as GitHubPr[];
-        const keyLabel = jira ? idChip(jira.key, jira.url) : idChip(item.id);
-        // The descriptive summary is what answers "what is this, actually" —
-        // it belongs in the prominent heading, not demoted below a bare key.
-        const heading = jira?.summary ?? prs[0]?.title ?? '(no title)';
-        const metaChips = jira
-          ? `<span class="chip">${escapeHtml(jira.status)}</span><span class="chip">${escapeHtml(jira.priority)} priority</span><span class="chip">${escapeHtml(jira.project)}</span>`
-          : '';
-        const prLinks = prs
-          .map((pr) => {
-            const conflictRow = pr.hasConflicts
-              ? `<div class="pr-conflict-row"><span class="badge urgency-high">⚠ Merge conflicts</span>${resolveConflictBtn(pr)}</div>`
-              : '';
-            return `<div class="pr-link">Linked PR: ${idChip(`${pr.repo}#${pr.number}`, pr.url)} — ${escapeHtml(pr.title)}</div>${conflictRow}`;
-          })
-          .join('');
-        const reasons = (item.reasons as string[]).map((r) => `<li>${escapeHtml(r)}</li>`).join('');
-        // Only tickets with a real Jira key open the detail dialog — a
-        // standalone PR/Slack-mention item has no Jira issue behind it to
-        // show. See the ticket-detail-open click handler at the bottom.
-        return `<div class="item-row urgency-${item.urgency}"${jira ? ` data-ticket-key="${escapeHtml(jira.key)}"` : ''}>
+  // ---------------------------------------------------------------------
+  // Project tabs — which tab a ticket/PR/approval/task belongs to. A real
+  // mapped project (config.github.repoMap) gets its own tab; everything
+  // else (no mapped repo — the user's own examples: QGP, QCBP, tickets
+  // used purely for tracking/logging, not real delivery work) falls into
+  // one shared Miscellaneous tab. See the MISC_PROJECT_KEY comment above
+  // for why this is the one, zero-config rule.
+  // ---------------------------------------------------------------------
+  const realProjectKeys = Object.keys(config.github.repoMap);
+  const realProjectKeySet = new Set(realProjectKeys);
+  const projectKeyByRepo = new Map<string, string>();
+  for (const [key, repo] of Object.entries(config.github.repoMap)) projectKeyByRepo.set(repo, key);
+
+  function projectKeyForJiraProject(jiraProjectKey: string | undefined | null): string | null {
+    return jiraProjectKey && realProjectKeySet.has(jiraProjectKey) ? jiraProjectKey : null;
+  }
+  function projectKeyForRepo(repo: string | undefined | null): string | null {
+    return repo ? (projectKeyByRepo.get(repo) ?? null) : null;
+  }
+  // A bare ticket-key string ("QED42OPSIN-60") -> its project prefix, used
+  // for approvals/archived tickets, which only ever carry the key itself,
+  // never a full JiraIssue to read `.project` off of directly.
+  function projectKeyFromTicketKeyString(key: string): string | null {
+    const m = key.match(/^([A-Z][A-Z0-9]*)-\d+$/);
+    return m ? projectKeyForJiraProject(m[1]!) : null;
+  }
+  function projectKeyForWorkItem(item: (typeof items)[number]): string {
+    const jira = item.jira as JiraIssue | null;
+    const prs = item.prs as GitHubPr[];
+    return projectKeyForJiraProject(jira?.project) ?? projectKeyForRepo(prs[0]?.repo) ?? MISC_PROJECT_KEY;
+  }
+  // An approval's `target` is either a Jira key or a bare "repo#number" PR
+  // reference — never both, and never a richer object.
+  function projectKeyForApprovalTarget(target: string): string {
+    return (
+      projectKeyFromTicketKeyString(target) ?? projectKeyForRepo(target.match(/^(.+)#\d+$/)?.[1]) ?? MISC_PROJECT_KEY
+    );
+  }
+  function groupByProject<T>(list: T[], keyFn: (item: T) => string): Map<string, T[]> {
+    const map = new Map<string, T[]>();
+    for (const item of list) {
+      const k = keyFn(item);
+      const arr = map.get(k) ?? [];
+      arr.push(item);
+      map.set(k, arr);
+    }
+    return map;
+  }
+
+  function renderWorkItemSections(scopedItems: typeof displayItems): string {
+    const byCategory = new Map<string, typeof scopedItems>();
+    for (const item of scopedItems) {
+      const list = byCategory.get(item.category) ?? [];
+      list.push(item);
+      byCategory.set(item.category, list);
+    }
+    return CATEGORY_ORDER.map((category) => {
+      const list = byCategory.get(category);
+      if (!list || list.length === 0) return '';
+      list.sort((a, b) => (urgencyRank[a.urgency] ?? 9) - (urgencyRank[b.urgency] ?? 9));
+      const rows = list
+        .map((item) => {
+          const jira = item.jira as JiraIssue | null;
+          const prs = item.prs as GitHubPr[];
+          const keyLabel = jira ? idChip(jira.key, jira.url) : idChip(item.id);
+          // The descriptive summary is what answers "what is this, actually" —
+          // it belongs in the prominent heading, not demoted below a bare key.
+          const heading = jira?.summary ?? prs[0]?.title ?? '(no title)';
+          const metaChips = jira
+            ? `<span class="chip">${escapeHtml(jira.status)}</span><span class="chip">${escapeHtml(jira.priority)} priority</span><span class="chip">${escapeHtml(jira.project)}</span>`
+            : '';
+          const prLinks = prs
+            .map((pr) => {
+              const conflictRow = pr.hasConflicts
+                ? `<div class="pr-conflict-row"><span class="badge urgency-high">⚠ Merge conflicts</span>${resolveConflictBtn(pr)}</div>`
+                : '';
+              return `<div class="pr-link">Linked PR: ${idChip(`${pr.repo}#${pr.number}`, pr.url)} — ${escapeHtml(pr.title)}</div>${conflictRow}`;
+            })
+            .join('');
+          const reasons = (item.reasons as string[]).map((r) => `<li>${escapeHtml(r)}</li>`).join('');
+          // Only tickets with a real Jira key open the detail dialog — a
+          // standalone PR/Slack-mention item has no Jira issue behind it to
+          // show. See the ticket-detail-open click handler at the bottom.
+          return `<div class="item-row urgency-${item.urgency}"${jira ? ` data-ticket-key="${escapeHtml(jira.key)}"` : ''}>
   <div class="item-top">
     <span class="item-key">${keyLabel}</span>
     <span class="badge urgency-${item.urgency}">${escapeHtml(item.urgency)}</span>
@@ -293,19 +358,20 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   ${prLinks}
   ${reasons ? `<div class="reasons-label">Why this needs attention</div><ul class="reasons">${reasons}</ul>` : ''}
 </div>`;
-      })
-      .join('\n');
-    // A high-urgency item must never hide inside a collapsed section, no
-    // matter which category it landed in — that's exactly the gap that let
-    // a still-high-urgency ticket (Jira priority independent of category)
-    // look "gone" once it moved into a category that defaults to collapsed.
-    const hasHighUrgency = list.some((item) => item.urgency === 'high');
-    const open = OPEN_BY_DEFAULT.has(category) || hasHighUrgency;
-    return `<details class="category" ${open ? 'open' : ''}>
+        })
+        .join('\n');
+      // A high-urgency item must never hide inside a collapsed section, no
+      // matter which category it landed in — that's exactly the gap that let
+      // a still-high-urgency ticket (Jira priority independent of category)
+      // look "gone" once it moved into a category that defaults to collapsed.
+      const hasHighUrgency = list.some((item) => item.urgency === 'high');
+      const open = OPEN_BY_DEFAULT.has(category) || hasHighUrgency;
+      return `<details class="category" ${open ? 'open' : ''}>
   <summary><span>${CATEGORY_LABEL[category] ?? category}</span><span class="count">${list.length}</span></summary>
   <div class="category-body">${rows}</div>
 </details>`;
-  }).join('\n');
+    }).join('\n');
+  }
 
   // Once a PR merges, the ticket drops out of every "needs action" bucket
   // above — correct, but it also means the merge itself becomes invisible.
@@ -315,7 +381,8 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   // MERGED_DISPLAY_WINDOW_MS) or once the underlying PR falls out of
   // LiveGitHubConnector's own longer fetch window — nothing to reconcile
   // here specifically.
-  const recentlyMerged = items
+  type MergedEntry = { item: (typeof items)[number]; jira: JiraIssue | null; prs: GitHubPr[] };
+  const recentlyMerged: MergedEntry[] = items
     .map((item) => {
       const jira = item.jira as JiraIssue | null;
       const prs = (item.prs as GitHubPr[]).filter(
@@ -323,13 +390,13 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
       );
       return prs.length > 0 ? { item, jira, prs } : null;
     })
-    .filter((x): x is { item: (typeof items)[number]; jira: JiraIssue | null; prs: GitHubPr[] } => x !== null)
+    .filter((x): x is MergedEntry => x !== null)
     .sort((a, b) => Math.max(...b.prs.map((p) => +new Date(p.closedAt!))) - Math.max(...a.prs.map((p) => +new Date(p.closedAt!))));
 
-  const recentlyMergedHtml =
-    recentlyMerged.length === 0
+  function renderRecentlyMergedHtml(scoped: MergedEntry[]): string {
+    return scoped.length === 0
       ? '<p class="empty">Nothing merged in the last 7 days.</p>'
-      : recentlyMerged
+      : scoped
           .map(({ item, jira, prs }) => {
             const keyLabel = jira ? idChip(jira.key, jira.url) : idChip(item.id);
             const heading = jira?.summary ?? prs[0]!.title;
@@ -350,11 +417,12 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 </div>`;
           })
           .join('\n');
+  }
 
-  const approvalsHtml =
-    pendingApprovals.length === 0
+  function renderApprovalsHtml(scopedApprovals: typeof pendingApprovals): string {
+    return scopedApprovals.length === 0
       ? '<p class="empty">All clear — nothing waiting on a decision.</p>'
-      : pendingApprovals
+      : scopedApprovals
           .map((a) => {
             // Only meaningful when the target actually is a ticket key —
             // an approval like "review this pull request" targets
@@ -380,6 +448,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   </div>`;
           })
           .join('\n');
+  }
 
   const approvalHistoryHtml =
     resolvedApprovals.length === 0
@@ -396,10 +465,10 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
           })
           .join('\n');
 
-  const archivedHtml =
-    archived.length === 0
+  function renderArchivedHtml(scopedArchived: typeof archived): string {
+    return scopedArchived.length === 0
       ? '<p class="empty">Nothing archived.</p>'
-      : archived
+      : scopedArchived
           .map(
             (a) => `<div class="card compact">
   <div class="approval-head"><span class="item-title">${idChip(a.id, a.url)}</span><span class="item-top-spacer"></span>${unarchiveTicketBtn(a.id)}</div>
@@ -408,11 +477,12 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 </div>`,
           )
           .join('\n');
+  }
 
-  const tasksHtml =
-    tasks.length === 0
+  function renderTasksHtml(scopedTasks: typeof tasks): string {
+    return scopedTasks.length === 0
       ? '<p class="empty">None yet.</p>'
-      : tasks
+      : scopedTasks
           .slice(0, 8)
           .map((t) => {
             const jiraLink = t.jiraKey ? idChip(t.jiraKey, jiraUrlByKey.get(t.jiraKey)) : idChip(t.id);
@@ -423,6 +493,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 </div>`;
           })
           .join('\n');
+  }
 
   const signalsHtml =
     conversations.length === 0
@@ -455,6 +526,143 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
               `<div class="time-row"><span>${e.jiraKey ? idChip(e.jiraKey, jiraUrlByKey.get(e.jiraKey)) : 'General'}${e.note ? ` — ${escapeHtml(e.note)}` : ''}</span><span class="time-amt">${formatMinutes(e.minutes)}</span></div>`,
           )
           .join('\n');
+
+  // ---------------------------------------------------------------------
+  // Project tabs — one per real project (config.github.repoMap) plus one
+  // shared Miscellaneous tab for everything else. When nothing is mapped
+  // yet (a fresh/test config), there's only the one Miscellaneous bucket
+  // and no tabs are shown at all — identical to how this page rendered
+  // before this feature existed.
+  // ---------------------------------------------------------------------
+  const itemsByProject = groupByProject(displayItems, projectKeyForWorkItem);
+  const mergedByProject = groupByProject(
+    recentlyMerged,
+    (r) => projectKeyForJiraProject(r.jira?.project) ?? projectKeyForRepo(r.prs[0]?.repo) ?? MISC_PROJECT_KEY,
+  );
+  const approvalsByProject = groupByProject(pendingApprovals, (a) => projectKeyForApprovalTarget(a.target));
+  const archivedByProject = groupByProject(archived, (a) => projectKeyFromTicketKeyString(a.id) ?? MISC_PROJECT_KEY);
+
+  const tabKeys = realProjectKeys.length > 0 ? [...realProjectKeys, MISC_PROJECT_KEY] : [MISC_PROJECT_KEY];
+  const showTabs = tabKeys.length > 1;
+
+  // One `docker ps` for the whole render, matched per-project below —
+  // never one shell call per project.
+  const allContainers = await listDockerContainers();
+  const projectOverviews = new Map<string, ProjectOverview>(
+    await Promise.all(
+      realProjectKeys.map(
+        async (key): Promise<[string, ProjectOverview]> => [
+          key,
+          await buildProjectOverview(config.github.repoMap[key]!, config, allContainers),
+        ],
+      ),
+    ),
+  );
+
+  function renderProjectOverviewCard(overview: ProjectOverview): string {
+    const stackChips =
+      overview.techStack.length > 0
+        ? overview.techStack.map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join('')
+        : '';
+    const localRow = overview.localUrl
+      ? `<div class="overview-row"><span class="overview-dot ${overview.localUrlLive ? 'dot-live' : 'dot-off'}"></span>${link(overview.localUrl, overview.localUrl)} — ${overview.localUrlLive ? 'running' : 'not running right now'}</div>`
+      : '';
+    const dockerRow =
+      overview.dockerContainers.length > 0
+        ? `<div class="overview-row"><span class="overview-dot dot-live"></span>${overview.dockerContainers.length} Docker container(s) running: ${overview.dockerContainers.map((c) => escapeHtml(c.name)).join(', ')}</div>`
+        : '';
+    // A simple, honest flow — never a fabricated layer: Frontend is always
+    // shown (it's the mapped repo itself); Backend only appears when
+    // backendSync actually names one for this repo.
+    const frontendLabel = overview.techStack[0] ?? 'Frontend';
+    const diagram = `<div class="stack-diagram">
+  <div class="stack-box">Browser</div>
+  <div class="stack-arrow">→</div>
+  <div class="stack-box">${escapeHtml(frontendLabel)}${overview.localUrl ? `<span class="stack-box-sub">${escapeHtml(overview.localUrl)}</span>` : ''}</div>
+  ${overview.backendDescription ? `<div class="stack-arrow">→</div><div class="stack-box">${escapeHtml(overview.backendDescription)}</div>` : ''}
+</div>`;
+    return `<div class="panel project-overview">
+  <div class="panel-head"><h2>Project structure</h2></div>
+  ${diagram}
+  ${stackChips ? `<div class="overview-chips">${stackChips}</div>` : ''}
+  ${localRow}
+  ${dockerRow}
+  ${!localRow && !dockerRow && !stackChips ? '<p class="empty">Nothing detected yet — no package.json, preview recipe, or matching Docker container found for this repo.</p>' : ''}
+</div>`;
+  }
+
+  function renderProjectPane(key: string, isActive: boolean): string {
+    const scopedItems = itemsByProject.get(key) ?? [];
+    const scopedMerged = mergedByProject.get(key) ?? [];
+    const scopedApprovals = approvalsByProject.get(key) ?? [];
+    const scopedArchived = archivedByProject.get(key) ?? [];
+    const overview = projectOverviews.get(key);
+    const overviewCard = overview ? renderProjectOverviewCard(overview) : '';
+
+    return `<div class="project-pane" data-project-pane="${escapeHtml(key)}"${isActive ? '' : ' hidden'}>
+  ${overviewCard}
+  <div class="panel" id="panel-active-${escapeHtml(key)}">
+    <div class="panel-head"><h2>Active work items</h2><span class="count">${scopedItems.length}</span></div>
+    ${scopedItems.length > 0 ? searchBox('Search your tickets…') : ''}
+    ${renderWorkItemSections(scopedItems) || '<p class="empty">Nothing tracked yet — run <code>npm run cli run</code>.</p>'}
+  </div>
+
+  <div class="panel" id="panel-recently-merged-${escapeHtml(key)}">
+    <div class="panel-head"><h2>Recently merged</h2><span class="count">${scopedMerged.length}</span></div>
+    ${scopedMerged.length > 0 ? searchBox('Search recently merged…') : ''}
+    ${renderRecentlyMergedHtml(scopedMerged)}
+  </div>
+
+  <div class="panel" id="panel-decision-${escapeHtml(key)}">
+    <div class="panel-head"><h2>Needs your decision</h2><span class="count">${scopedApprovals.length}</span></div>
+    ${scopedApprovals.length > 0 ? searchBox('Search pending approvals…') : ''}
+    ${renderApprovalsHtml(scopedApprovals)}
+  </div>
+
+  <div class="panel" id="panel-archived-${escapeHtml(key)}">
+    <div class="panel-head"><h2>Archived</h2><span class="count">${scopedArchived.length}</span></div>
+    <details>
+      <summary>Show ${scopedArchived.length} archived ticket${scopedArchived.length === 1 ? '' : 's'}</summary>
+      ${scopedArchived.length > 0 ? searchBox('Search archived…') : ''}
+      ${renderArchivedHtml(scopedArchived)}
+    </details>
+  </div>
+</div>`;
+  }
+
+  const projectTabsHtml = showTabs
+    ? `<div class="project-tabs" id="project-tabs">${tabKeys
+        .map((key) => {
+          const label = key === MISC_PROJECT_KEY ? MISC_PROJECT_LABEL : key;
+          const count = (itemsByProject.get(key) ?? []).length + (approvalsByProject.get(key) ?? []).length;
+          return `<button type="button" class="project-tab" data-project-tab="${escapeHtml(key)}">${escapeHtml(label)}${count > 0 ? `<span class="count">${count}</span>` : ''}</button>`;
+        })
+        .join('')}</div>`
+    : '';
+
+  // Which tab opens by default is a client-side (sessionStorage) decision
+  // (see restoreActiveProjectTab in the script below) so it survives the
+  // 60s auto-refresh — server-rendered markup always defaults to the
+  // first tab; the script corrects it immediately on load if a different
+  // one was last selected, with no visible flash because that script runs
+  // before paint... in practice a brief flash is possible on a slow
+  // connection, which is an acceptable trade-off for not needing a cookie
+  // round-trip just to remember a tab.
+  const projectPanesHtml = tabKeys.map((key, i) => renderProjectPane(key, i === 0)).join('\n');
+
+  // Every id the archive/unarchive refresh (see the script below) needs to
+  // re-fetch and swap — computed here, once, since the script can't derive
+  // "one set of these ids per project tab" on its own without duplicating
+  // this exact list.
+  const archiveAffectedIds = [
+    'stat-row',
+    ...tabKeys.flatMap((key) => [
+      `panel-active-${key}`,
+      `panel-recently-merged-${key}`,
+      `panel-decision-${key}`,
+      `panel-archived-${key}`,
+    ]),
+  ];
 
   const now = new Date();
   // What actually matters here is when Jira/Slack/GitHub were last really
@@ -521,6 +729,32 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
 
   .grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 1.25rem; align-items: start; }
   @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  .project-tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1.1rem; }
+  .project-tab {
+    font-family: var(--sans); font-size: 0.82rem; font-weight: 600; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+    padding: 0.4rem 0.9rem; cursor: pointer; display: inline-flex; align-items: center; gap: 0.4rem;
+  }
+  .project-tab:hover { color: var(--text); border-color: var(--faint); }
+  .project-tab.active { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+  .project-tab .count { font-family: var(--mono); font-size: 0.72rem; color: inherit; opacity: 0.8; margin: 0; }
+  .project-tab.active .count { color: var(--surface); }
+
+  .project-overview { }
+  .stack-diagram { display: flex; align-items: stretch; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.8rem; }
+  .stack-box {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.55rem 0.8rem; font-size: 0.82rem; font-weight: 600; display: flex; flex-direction: column;
+    justify-content: center; gap: 0.15rem; min-width: 90px; text-align: center;
+  }
+  .stack-box-sub { font-family: var(--mono); font-size: 0.68rem; font-weight: 400; color: var(--muted); }
+  .stack-arrow { display: flex; align-items: center; color: var(--faint); font-size: 1rem; }
+  .overview-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.5rem; }
+  .overview-row { font-size: 0.82rem; color: var(--muted); display: flex; align-items: center; gap: 0.4rem; margin-top: 0.3rem; }
+  .overview-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .overview-dot.dot-live { background: var(--ok); }
+  .overview-dot.dot-off { background: var(--faint); }
 
   .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.1rem 1.2rem; margin-bottom: 1.25rem; }
   .panel-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 0.7rem; }
@@ -733,19 +967,11 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   ${statCard(minutesToday > 0 ? formatMinutes(minutesToday) : '0m', 'Time logged today', 'neutral')}
 </div>
 
+${projectTabsHtml}
+
 <div class="grid">
   <div class="main">
-    <div class="panel" id="panel-active">
-      <div class="panel-head"><h2>Active work items</h2><span class="count">${displayItems.length}</span></div>
-      ${displayItems.length > 0 ? searchBox('Search your tickets…') : ''}
-      ${workItemSections || '<p class="empty">Nothing tracked yet — run <code>npm run cli run</code>.</p>'}
-    </div>
-
-    <div class="panel" id="panel-recently-merged">
-      <div class="panel-head"><h2>Recently merged</h2><span class="count">${recentlyMerged.length}</span></div>
-      ${recentlyMerged.length > 0 ? searchBox('Search recently merged…') : ''}
-      ${recentlyMergedHtml}
-    </div>
+    ${projectPanesHtml}
 
     <div class="panel">
       <div class="panel-head"><h2>Latest daily briefing</h2></div>
@@ -756,27 +982,12 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
       }
     </div>
 
-    <div class="panel" id="panel-decision">
-      <div class="panel-head"><h2>Needs your decision</h2><span class="count">${pendingApprovals.length}</span></div>
-      ${pendingApprovals.length > 0 ? searchBox('Search pending approvals…') : ''}
-      ${approvalsHtml}
-    </div>
-
     <div class="panel">
       <div class="panel-head"><h2>Approval history</h2><span class="count">${resolvedApprovals.length}</span></div>
       ${resolvedApprovals.length > 0 ? searchBox('Search approval history…') : ''}
       <details>
         <summary>Show the last ${resolvedApprovals.length} resolved</summary>
         ${approvalHistoryHtml}
-      </details>
-    </div>
-
-    <div class="panel" id="panel-archived">
-      <div class="panel-head"><h2>Archived</h2><span class="count">${archived.length}</span></div>
-      <details>
-        <summary>Show ${archived.length} archived ticket${archived.length === 1 ? '' : 's'}</summary>
-        ${archived.length > 0 ? searchBox('Search archived…') : ''}
-        ${archivedHtml}
       </details>
     </div>
   </div>
@@ -797,7 +1008,7 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     <div class="panel">
       <div class="panel-head"><h2>Engineering execution</h2><span class="count">${tasks.length}</span></div>
       ${tasks.length > 0 ? searchBox('Search execution tasks…') : ''}
-      ${tasksHtml}
+      ${renderTasksHtml(tasks)}
     </div>
   </div>
 </div>
@@ -918,7 +1129,10 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
   // server's own state without a full page reload. The freshly swapped-in
   // markup needs no new listeners — every click handler here is delegated
   // on document, not bound per-element.
-  var ARCHIVE_AFFECTED_IDS = ['stat-row', 'panel-active', 'panel-recently-merged', 'panel-decision', 'panel-archived'];
+  // Computed server-side (one set of panel ids per project tab) and
+  // embedded here as a literal — the script has no way to derive "which
+  // project tabs exist right now" on its own.
+  var ARCHIVE_AFFECTED_IDS = ${JSON.stringify(archiveAffectedIds)};
   function refreshArchiveAffectedPanels() {
     fetch('/')
       .then(function (r) { return r.text(); })
@@ -996,12 +1210,16 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     });
   }
 
-  // Panel headings are unique on this page, so they double as a stable
-  // sessionStorage key — no need to thread ids through every panel just
-  // for this.
+  // A panel heading alone isn't unique anymore once project tabs exist —
+  // "Active work items" appears once per project tab now — so the storage
+  // key also folds in the enclosing project pane's own key, when there is
+  // one (a panel outside any tab, like "Today" or "Slack", has none).
   function panelSearchKey(panel) {
     var h2 = panel.querySelector('.panel-head h2');
-    return h2 ? 'wa-search:' + h2.textContent.trim() : null;
+    if (!h2) return null;
+    var pane = panel.closest('[data-project-pane]');
+    var paneKey = pane ? pane.getAttribute('data-project-pane') + ':' : '';
+    return 'wa-search:' + paneKey + h2.textContent.trim();
   }
 
   document.addEventListener('input', function (e) {
@@ -1048,6 +1266,36 @@ export async function renderDashboard(db: AnyDb): Promise<string> {
     });
   }
   restorePanelSearches(document);
+
+  // Project tabs — purely client-side show/hide (every pane is already in
+  // the page, just hidden), persisted the same way as the per-panel search
+  // above: sessionStorage, not a cookie, so the tab you had open survives
+  // the 60s auto-refresh too instead of silently snapping back to the
+  // first one every minute.
+  var TAB_STORAGE_KEY = 'wa-active-project-tab';
+  function activateProjectTab(key) {
+    document.querySelectorAll('.project-tab').forEach(function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-project-tab') === key);
+    });
+    document.querySelectorAll('[data-project-pane]').forEach(function (pane) {
+      pane.hidden = pane.getAttribute('data-project-pane') !== key;
+    });
+  }
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.project-tab');
+    if (!btn) return;
+    var key = btn.getAttribute('data-project-tab') || '';
+    activateProjectTab(key);
+    try { sessionStorage.setItem(TAB_STORAGE_KEY, key); } catch (err) { /* fine, just won't survive a refresh */ }
+  });
+  (function restoreActiveProjectTab() {
+    var tabs = document.querySelectorAll('.project-tab');
+    if (tabs.length === 0) return; // no tabs rendered at all — nothing mapped yet
+    var validKeys = Array.prototype.map.call(tabs, function (t) { return t.getAttribute('data-project-tab'); });
+    var saved;
+    try { saved = sessionStorage.getItem(TAB_STORAGE_KEY); } catch (err) { saved = null; }
+    activateProjectTab(saved && validKeys.indexOf(saved) !== -1 ? saved : validKeys[0]);
+  })();
 
   // ---------------------------------------------------------------------
   // Ticket detail dialog — click a ticket card to see the full Jira issue
