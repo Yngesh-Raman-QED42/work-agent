@@ -14,6 +14,8 @@ import { MockScreenshotCapture, SCREENSHOT_STEPS_PATH } from '../../src/agents/e
 import { MockJiraIssueUpdater } from '../../src/integrations/jira/issueUpdater.js';
 import { MockFigmaClient } from '../../src/integrations/figma/client.js';
 import { FIGMA_REFERENCE_DIR } from '../../src/agents/engineeringExecution/figmaReference.js';
+import { CODE_REVIEW_PATH } from '../../src/agents/engineeringExecution/codeReview.js';
+import { readExecutionState } from '../../src/agents/engineeringExecution/executionState.js';
 import { IN_PROGRESS_STATUS_CANDIDATES, IN_REVIEW_STATUS_CANDIDATES } from '../../src/agents/engineeringExecution/runbook.js';
 import type { TaskContext } from '../../src/agents/engineeringExecution/models.js';
 import type { WorkAgentConfig } from '../../src/config/index.js';
@@ -60,6 +62,11 @@ function configWithRepo(previewRecipe: 'none' | 'explicit' | 'disabled' = 'none'
   };
 }
 
+function writeReviewRecord(worktree: string, record: unknown) {
+  mkdirSync(join(worktree, '.work-agent'), { recursive: true });
+  writeFileSync(join(worktree, CODE_REVIEW_PATH), JSON.stringify(record));
+}
+
 class FakeWorktreeManager extends WorktreeManager {
   created: string[] = [];
   constructor() {
@@ -68,6 +75,8 @@ class FakeWorktreeManager extends WorktreeManager {
   override async create(nameHint: string): Promise<string> {
     const path = mkdtempSync(join(tmpdir(), `${nameHint}-`));
     this.created.push(path);
+    // Stands in for the implementer having run /code-review (prompt step 4).
+    writeReviewRecord(path, { findings: [] });
     return path;
   }
   override async remove(path: string): Promise<void> {
@@ -835,7 +844,7 @@ describe('runExecution', () => {
     expect(started.status).toBe('started');
     // Real exec-start writes exactly this file for the exec-finish handoff
     // (executionState.ts) — simulate its presence directly here.
-    mkdirSync(join(started.worktreePath!, '.work-agent'));
+    mkdirSync(join(started.worktreePath!, '.work-agent'), { recursive: true });
     writeFileSync(join(started.worktreePath!, '.work-agent', 'execution-state.json'), '{}');
 
     const result = await finishExecution({
@@ -1082,6 +1091,7 @@ describe('runExecution', () => {
       'execution_task_selected',
       'execution_worktree_created',
       'execution_implementation_finished',
+      'execution_code_review',
       'execution_checks_run',
       'execution_gate_decision',
       'execution_pushed',
@@ -1118,5 +1128,173 @@ describe('runExecution', () => {
       checkCommands: NOOP_CHECKS,
     });
     expect(result.status).toBe('opened_pr');
+  });
+});
+
+describe('finishExecution requires the implementer to have run /code-review', () => {
+  async function startAndFinish(review: unknown | 'none') {
+    handle = await createTestDb();
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    const reviewFile = join(started.worktreePath!, CODE_REVIEW_PATH);
+    if (review === 'none') rmSync(reviewFile, { force: true });
+    else writeReviewRecord(started.worktreePath!, review);
+    const gitOps = new MockGitOps();
+    const prCreator = new MockPullRequestCreator();
+    const result = await finishExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      task: started.task!,
+      repo: started.repo!,
+      worktreePath: started.worktreePath!,
+      startedAt: started.startedAt!,
+      outcome: { success: true, summary: 'fixed it' },
+      gitOps,
+      prCreator,
+      checkCommands: NOOP_CHECKS,
+    });
+    return { result, prCreator, worktreePath: started.worktreePath! };
+  }
+
+  it('stops before checks, commits or a PR when no review was recorded, and can simply be re-run', async () => {
+    const { result, prCreator, worktreePath } = await startAndFinish('none');
+    expect(result.status).toBe('stopped_needs_code_review');
+    expect(result.reasons[0]).toMatch(/\/code-review/);
+    expect(result.checks).toEqual([]);
+    expect(prCreator.calls).toHaveLength(0);
+    expect(await new ApprovalsStore(handle!.db).listPending()).toEqual([]);
+    expect(existsSync(worktreePath)).toBe(true); // worktree kept for the re-run
+  });
+
+  it('rejects a not_fixed finding without a reason', async () => {
+    const { result } = await startAndFinish({
+      findings: [{ summary: 'race in cache', outcome: 'not_fixed' }],
+    });
+    expect(result.status).toBe('stopped_needs_code_review');
+    expect(result.reasons[0]).toMatch(/reason/);
+  });
+
+  it('opens the PR once a review is recorded, including findings left with a reason', async () => {
+    const { result } = await startAndFinish({
+      findings: [
+        { summary: 'missing null check', outcome: 'fixed' },
+        { summary: 'rename helper', outcome: 'not_fixed', reason: 'out of scope for this ticket' },
+      ],
+    });
+    expect(result.status).toBe('opened_pr');
+  });
+
+  it('a review covers one attempt only: after a failed gate, a re-run needs a fresh review', async () => {
+    handle = await createTestDb();
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    const finish = (checkCommands: Array<[string, string[]]>) =>
+      finishExecution({
+        db: handle!.db,
+        config: configWithRepo(),
+        task: started.task!,
+        repo: started.repo!,
+        worktreePath: started.worktreePath!,
+        startedAt: started.startedAt!,
+        outcome: { success: true, summary: 'fixed it' },
+        gitOps: new MockGitOps(),
+        prCreator: new MockPullRequestCreator(),
+        checkCommands,
+        checkRetries: 0,
+      });
+    expect((await finish([['test', ['false']]])).status).toBe('stopped_failed_checks');
+    expect((await finish(NOOP_CHECKS)).status).toBe('stopped_needs_code_review');
+  });
+
+  it('unattended (runExecution), a missing review is filed as an approval so the ticket does not stall', async () => {
+    handle = await createTestDb();
+    const result = await runExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      // A worktree where nobody recorded a review (the fake one pre-seeds it).
+      worktreeManagerFactory: () =>
+        new (class extends FakeWorktreeManager {
+          override async create(nameHint: string): Promise<string> {
+            const p = await super.create(nameHint);
+            rmSync(join(p, CODE_REVIEW_PATH), { force: true });
+            return p;
+          }
+        })(),
+      claudeRunner: new MockClaudeCodeRunner(undefined, undefined, { recordsCodeReview: false }),
+      gitOps: new MockGitOps(),
+      prCreator: new MockPullRequestCreator(),
+      checkCommands: NOOP_CHECKS,
+    });
+    expect(result.status).toBe('stopped_needs_code_review');
+    const pending = await new ApprovalsStore(handle.db).listPending();
+    expect(pending.map((a) => a.action)).toContain('manual_review_missing_code_review');
+
+    // The recovery the approval names works: exec-finish's state exists, and once a
+    // review is recorded the re-run proceeds and settles that approval.
+    const state = await readExecutionState(result.worktreePath!);
+    expect(state?.task.key).toBe('PROJ-1');
+    writeReviewRecord(result.worktreePath!, { findings: [] });
+    const rerun = await finishExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      task: state!.task,
+      repo: state!.repo,
+      worktreePath: state!.worktreePath,
+      startedAt: new Date(state!.startedAt),
+      outcome: { success: true, summary: 'fixed it' },
+      gitOps: new MockGitOps(),
+      prCreator: new MockPullRequestCreator(),
+      checkCommands: NOOP_CHECKS,
+    });
+    expect(rerun.status).toBe('opened_pr');
+    const missing = await new ApprovalsStore(handle.db).get('exec-missing-review:PROJ-1');
+    expect(missing?.status).toBe('approved');
+  });
+
+  it('a crash after the review gate keeps the record, so a plain re-run needs no second review', async () => {
+    handle = await createTestDb();
+    const started = await startExecution({
+      db: handle.db,
+      config: configWithRepo(),
+      candidates: [makeTask()],
+      policy: new AutonomyPolicy(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+    });
+    const brokenGit = new MockGitOps();
+    brokenGit.diffStat = async () => {
+      throw new Error('git crashed');
+    };
+    await expect(
+      finishExecution({
+        db: handle.db,
+        config: configWithRepo(),
+        task: started.task!,
+        repo: started.repo!,
+        worktreePath: started.worktreePath!,
+        startedAt: started.startedAt!,
+        outcome: { success: true, summary: 'fixed it' },
+        gitOps: brokenGit,
+        prCreator: new MockPullRequestCreator(),
+        checkCommands: NOOP_CHECKS,
+      }),
+    ).rejects.toThrow('git crashed');
+    expect(existsSync(join(started.worktreePath!, CODE_REVIEW_PATH))).toBe(true);
+  });
+
+  it('rejects a whitespace-only finding summary', async () => {
+    const { result } = await startAndFinish({ findings: [{ summary: '   ', outcome: 'fixed' }] });
+    expect(result.status).toBe('stopped_needs_code_review');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTestDb, type TestDbHandle } from '../../src/test-utils/db.js';
@@ -187,6 +187,62 @@ describe('monitorPr', () => {
     expect(result.outcome).toBe('escalated');
   });
 
+  it('never pushes a feedback fix that was not run through /code-review', async () => {
+    handle = await createTestDb();
+    const gitOps = new MockGitOps();
+    const result = await monitorPr({
+      db: handle.db,
+      repo: 'org/repo',
+      number: 42,
+      reader: new MockPrStatusReader(makePr({ comments: [makeComment('typo: fix spelling')] })),
+      claudeRunner: new MockClaudeCodeRunner(undefined, undefined, { recordsCodeReview: false }),
+      gitOps,
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      repoLocalPath: '/x',
+      checkCommands: NOOP_CHECKS,
+    });
+    expect(result.outcome).toBe('escalated');
+    expect(result.reasons[0]).toMatch(/\/code-review/);
+    expect(gitOps.calls.some((c) => c[0] === 'push' || c[0] === 'commitAll')).toBe(false);
+    const pending = await new ApprovalsStore(handle.db).listPending();
+    expect(pending.map((a) => [a.id, a.action])).toEqual([
+      ['pr-missing-review:org/repo#42', 'manual_review_missing_code_review'],
+    ]);
+
+    // The next tick doesn't redo the attempt while that's waiting on a person.
+    const runner = new MockClaudeCodeRunner();
+    const again = await monitorPr({
+      db: handle.db,
+      repo: 'org/repo',
+      number: 42,
+      reader: new MockPrStatusReader(makePr({ comments: [makeComment('typo: fix spelling')] })),
+      claudeRunner: runner,
+      gitOps,
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      repoLocalPath: '/x',
+      checkCommands: NOOP_CHECKS,
+    });
+    expect(again.outcome).toBe('escalated');
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('keeps the review record off the PR branch', async () => {
+    handle = await createTestDb();
+    const result = await monitorPr({
+      db: handle.db,
+      repo: 'org/repo',
+      number: 42,
+      reader: new MockPrStatusReader(makePr({ comments: [makeComment('typo: fix spelling')] })),
+      claudeRunner: new MockClaudeCodeRunner(),
+      gitOps: new MockGitOps(),
+      worktreeManagerFactory: () => new FakeWorktreeManager(),
+      repoLocalPath: '/x',
+      checkCommands: NOOP_CHECKS,
+    });
+    expect(result.outcome).toBe('auto_fix_pushed');
+    expect(existsSync(join(result.worktreePath!, '.work-agent', 'code-review.json'))).toBe(false);
+  });
+
   it('audit log records the full auto-fix sequence', async () => {
     handle = await createTestDb();
     await monitorPr({
@@ -206,6 +262,7 @@ describe('monitorPr', () => {
       'pr_monitor_fetched_status',
       'pr_monitor_worktree_created',
       'pr_monitor_implementation_finished',
+      'pr_monitor_code_review',
       'pr_monitor_checks_run',
       'pr_monitor_gate_decision',
       'pr_monitor_pushed_followup',

@@ -247,6 +247,7 @@ async function cmdExecFinish(args: string[]) {
   if (result.screenshotError) console.log(`\nScreenshot capture failed (PR still opened without one):\n${result.screenshotError}`);
   if (result.reasons.length) console.log('Reasons:', result.reasons.join('; '));
   if (result.status === 'opened_pr') console.log('\nA log_execution_time approval is now pending — review it with "work-agent approvals list".');
+  if (result.status === 'stopped_needs_code_review') process.exitCode = 1;
 }
 
 async function cmdStatus() {

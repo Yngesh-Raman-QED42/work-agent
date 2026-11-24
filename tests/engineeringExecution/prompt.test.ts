@@ -27,6 +27,16 @@ describe('buildImplementationPrompt — plain ticket (no sub-tasks)', () => {
   });
 });
 
+describe('buildImplementationPrompt — self code review', () => {
+  it('tells the implementer to run /code-review on this exact worktree and record the outcome', () => {
+    const prompt = buildImplementationPrompt(makeTask(), '/tmp/wt-abc');
+    expect(prompt).toContain('/code-review /tmp/wt-abc');
+    expect(prompt).toContain('.work-agent/code-review.json');
+    expect(prompt).toContain('excluding .work-agent/');
+    expect(prompt).toMatch(/No PR is opened or updated without it/);
+  });
+});
+
 describe('buildImplementationPrompt — a story with sub-tasks', () => {
   const story = makeTask({
     key: 'QED42OPSIN-96',

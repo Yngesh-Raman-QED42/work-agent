@@ -32,6 +32,18 @@ UI-visible and the prompt told you a screenshot recipe is available, write
 `.work-agent/screenshot-steps.json` in the worktree as instructed in the prompt — the next
 command picks it up automatically, you don't have to invoke the screenshot mechanism yourself.
 
+**Then review your own change with `/code-review` before finishing.** Point it explicitly at
+the worktree (this session's own directory is the work-agent repo, so a bare `/code-review`
+reviews the wrong code), e.g. `/code-review <worktree path> (review the uncommitted changes,
+git diff HEAD plus untracked files, excluding .work-agent/, run inside that directory)`. Fix every real finding, re-run
+the project's checks, and record the outcome in `.work-agent/code-review.json` as
+`{"findings":[{"summary":"...","outcome":"fixed"|"not_fixed","reason":"why, if not_fixed"}]}`
+(an empty array if it found nothing). `exec-finish` refuses to open a PR without that file
+(status `stopped_needs_code_review`, nothing committed or filed), so just add it and re-run.
+If an attempt stops on failed checks or the gate, the record is discarded: once you've changed
+the code, review again before re-running. The automated PR-feedback fixer
+(`monitorPr`) follows the same rule and won't push a fix without a review.
+
 ```bash
 work-agent exec-finish <TICKET_KEY> --summary "<what you changed and why>"
 ```
@@ -40,7 +52,8 @@ way a person would describe their own change (what changed, why), never as a rep
 having done it. No "I implemented this using...", no mentioning Claude/an agent/automation at
 all — it should read exactly like any other engineer's PR/commit summary.
 
-This alone does everything else, in order, automatically: independently re-runs
+This alone does everything else, in order, automatically: confirms the code review above was
+recorded, independently re-runs
 tests/lint/typecheck/build (never trusts your own claim), checks the safety gate (diff ≤15
 files, no forbidden paths), captures the screenshot/GIF if you wrote the steps file, then
 branches, commits, pushes, and opens the PR (draft or real, per
@@ -53,6 +66,16 @@ half-done or trying to patch around it.
 
 If either command errors or behaves unexpectedly, **stop and tell the user** what it actually
 said — don't work around it by doing the step manually instead.
+
+## Any other change that becomes or updates a PR: `/code-review` first
+
+The same rule applies outside `exec-start`/`exec-finish`, for every project: resolving PR review
+comments, follow-up fixes on an open PR, or a change done by hand because the pipeline couldn't
+take it. Before pushing (or opening the PR), run `/code-review` on exactly what you're about to
+push, pointed explicitly at that checkout and base, e.g. `/code-review <checkout path> (review
+git diff origin/<base>...HEAD plus uncommitted changes, run inside that directory)`. Fix every
+real finding, re-run the checks, then push. When you reply to the reviewer, mention only what
+changed, never the tool.
 
 ## If asked to estimate a ticket: read deeply, stay read-only
 

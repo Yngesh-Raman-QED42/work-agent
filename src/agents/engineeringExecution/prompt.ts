@@ -1,6 +1,7 @@
 import type { TaskContext } from './models.js';
 import { SCREENSHOT_STEPS_PATH, type PreviewRecipe } from './screenshot.js';
 import type { FigmaDesignReference } from './figmaReference.js';
+import { codeReviewStep } from './codeReview.js';
 
 function commentsBlockFor(task: TaskContext): string {
   return task.comments.length > 0 ? task.comments.map((c) => `- ${c.author}: ${c.body}`).join('\n') : '(no comments)';
@@ -113,6 +114,7 @@ any one sub-task alone. Follow this order strictly:`
    expand scope, refactor unrelated code, or "improve while you're in there."
 3. After implementing, run the project's test suite, lint, typecheck, and build
    (check package.json scripts) and fix any failures your change introduced.
+${codeReviewStep(4, worktreePath)}
 
 Hard constraints:
 - Your working directory is ${worktreePath} — never touch any path outside it.

@@ -1,3 +1,5 @@
+import { CODE_REVIEW_PATH } from './codeReview.js';
+
 export interface RunOutcome {
   success: boolean;
   summary: string;
@@ -30,10 +32,22 @@ export class MockClaudeCodeRunner implements ClaudeCodeRunner {
   constructor(
     private outcome: RunOutcome = { success: true, summary: 'mock implementation complete' },
     private writeFile?: { relPath: string; content: string },
+    // Simulates the implementer following the prompt's /code-review step; off to
+    // test the path where it didn't.
+    private opts: { recordsCodeReview?: boolean } = {},
   ) {}
 
   async run(worktreePath: string, prompt: string): Promise<RunOutcome> {
     this.calls.push({ worktreePath, prompt });
+    // A real implementer reviews its own change before reporting back (see
+    // prompt.ts step 4); the mock records an empty review the same way.
+    if (this.opts.recordsCodeReview !== false) {
+      const { mkdirSync, writeFileSync } = await import('node:fs');
+      const { dirname, join } = await import('node:path');
+      const reviewPath = join(worktreePath, CODE_REVIEW_PATH);
+      mkdirSync(dirname(reviewPath), { recursive: true });
+      writeFileSync(reviewPath, JSON.stringify({ findings: [] }));
+    }
     if (this.writeFile) {
       const { mkdirSync, writeFileSync } = await import('node:fs');
       const { dirname, join } = await import('node:path');

@@ -10,6 +10,8 @@ import { AuditLog } from '../../pipeline/audit.js';
 import { ApprovalsStore } from '../../shared/approvals.js';
 import { evaluateGate, type GateConfig } from './gate.js';
 import { runChecks, DEFAULT_COMMANDS } from './checks.js';
+import { readCodeReviewRecord, discardCodeReviewRecord, describeCodeReview } from './codeReview.js';
+import { writeExecutionState } from './executionState.js';
 import type { ClaudeCodeRunner, RunOutcome } from './claudeRunner.js';
 import type { GitOps, AssetFile } from './gitOps.js';
 import type { ExecutionResult, RepoInfo, TaskContext } from './models.js';
@@ -326,6 +328,22 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
     return { status: 'stopped_ambiguous', task, checks: [], reasons: [outcome.summary], worktreePath };
   }
 
+  // The implementer must have run /code-review on its own change first. Without
+  // a record, stop before anything is checked, committed or filed: nothing has
+  // happened yet, so exec-finish can simply be run again once it's done.
+  const review = await readCodeReviewRecord(worktreePath);
+  if (!review.ok) {
+    await audit.log('execution_missing_code_review', { key: task.key, reason: review.reason });
+    report(review.reason);
+    await upsertTask(db, task.key, { status: 'gated_stop' });
+    return { status: 'stopped_needs_code_review', task, checks: [], reasons: [review.reason], worktreePath };
+  }
+  await audit.log('execution_code_review', { key: task.key, findings: review.record.findings });
+  // A review is now on record: an earlier "missing review" stop is settled.
+  const missingReview = await approvals.get(`exec-missing-review:${task.key}`);
+  if (missingReview?.status === 'pending') await approvals.resolve(missingReview.id, 'approved');
+  report(describeCodeReview(review.record));
+
   report('Implementation reported done. Independently re-running tests/lint/typecheck/build (can take a few minutes)...');
   const checks = await runChecks(worktreePath, deps.checkCommands ?? DEFAULT_COMMANDS, undefined, deps.checkRetries);
   await audit.log('execution_checks_run', { results: checks.map((c) => ({ name: c.name, passed: c.passed })) });
@@ -351,6 +369,8 @@ export async function finishExecution(deps: FinishExecutionDeps): Promise<Execut
     });
     await audit.log('execution_stopped_failed_checks', { key: task.key, reasons: gateDecision.reasons });
     await upsertTask(db, task.key, { status: 'gated_stop' });
+    // The code will change before the next attempt, so that attempt needs its own review.
+    await discardCodeReviewRecord(worktreePath);
     return { status: 'stopped_failed_checks', task, checks, reasons: gateDecision.reasons, diffStat, worktreePath };
   }
 
@@ -608,7 +628,7 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
 
   const outcome = await deps.claudeRunner.run(started.worktreePath!, started.prompt!);
 
-  return finishExecution({
+  const result = await finishExecution({
     db: deps.db,
     config: deps.config,
     task: started.task!,
@@ -625,4 +645,31 @@ export async function runExecution(deps: RunExecutionDeps): Promise<ExecutionRes
     getIssueUpdater: deps.getIssueUpdater,
     onProgress: deps.onProgress,
   });
+
+  // From the CLI a person sees this and simply re-runs exec-finish. Unattended,
+  // nobody would: surface it like any other stop so the ticket doesn't stall.
+  if (result.status === 'stopped_needs_code_review') {
+    // Persist what exec-finish needs, so the recovery below actually works from
+    // the CLI (only exec-start writes this otherwise).
+    await writeExecutionState({
+      task: started.task!,
+      repo: started.repo!,
+      worktreePath: started.worktreePath!,
+      startedAt: started.startedAt!.toISOString(),
+      prompt: started.prompt!,
+    });
+    await new ApprovalsStore(deps.db).file({
+      id: `exec-missing-review:${started.task!.key}`,
+      source: 'engineering_execution',
+      action: 'manual_review_missing_code_review',
+      target: started.task!.key,
+      targetUrl: started.task!.url,
+      context: { task: started.task, worktreePath: started.worktreePath },
+      reasoning: result.reasons.join('; '),
+      riskLevel: 'medium',
+      consequenceIfApproved: 'Nothing automated happens — the change stays uncommitted in the worktree.',
+      recommendedAction: `Run /code-review on ${started.worktreePath}, record it, then run exec-finish ${started.task!.key}.`,
+    });
+  }
+  return result;
 }

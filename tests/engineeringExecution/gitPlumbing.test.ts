@@ -216,6 +216,8 @@ describe('git plumbing (real git, throwaway scratch repo, never touches any real
     mkdirSync(join(worktreePath, '.work-agent'));
     const steps: ScreenshotStep[] = [{ label: 'home', path: '/' }];
     writeFileSync(join(worktreePath, '.work-agent', 'screenshot-steps.json'), JSON.stringify(steps));
+    // The implementer's /code-review record (prompt step 4), required by exec-finish.
+    writeFileSync(join(worktreePath, '.work-agent', 'code-review.json'), JSON.stringify({ findings: [] }));
 
     let sawSymlinkInsideCapture: boolean | null = null;
     class FakePlaywrightCapture extends PlaywrightScreenshotCapture {

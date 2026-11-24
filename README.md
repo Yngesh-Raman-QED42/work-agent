@@ -99,8 +99,13 @@ live session actually reads).
    handoff. Also moves the Jira ticket to whatever "in progress"-equivalent status its own
    workflow currently offers (`IN_PROGRESS_STATUS_CANDIDATES` in `runbook.ts` — tried in order,
    first one the real workflow has wins; never forces one that doesn't exist).
-2. You (or the live session) implement the fix in that worktree.
-3. `exec-finish <KEY> --summary "..."` — independently re-verifies, checks the gate (retrying each
+2. You (or the live session) implement the fix in that worktree, then run Claude Code's
+   `/code-review` on it (pointed at the worktree path), fix the real findings, and record the
+   outcome in `.work-agent/code-review.json` (`src/agents/engineeringExecution/codeReview.ts`).
+   The implementation prompt spells this out for every project.
+3. `exec-finish <KEY> --summary "..."` — refuses to continue without that review record
+   (`stopped_needs_code_review`: nothing committed or filed, just add it and re-run), then
+   independently re-verifies, checks the gate (retrying each
    check up to twice more on failure first — see "Known simplifications" below), captures a
    screenshot/GIF if you wrote the steps file, branches/commits/pushes, opens the PR, posts a Jira
    comment linking the PR, moves the ticket to whatever "in review"-equivalent status is available

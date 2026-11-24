@@ -6,6 +6,7 @@ import { evaluateGate, type GateConfig } from '../engineeringExecution/gate.js';
 import type { ClaudeCodeRunner } from '../engineeringExecution/claudeRunner.js';
 import type { GitOps } from '../engineeringExecution/gitOps.js';
 import { WorktreeManager } from '../engineeringExecution/worktree.js';
+import { codeReviewStep, consumeCodeReviewRecord, describeCodeReview } from '../engineeringExecution/codeReview.js';
 import { classifyAll } from './feedbackClassifier.js';
 import type { FeedbackClassification, MonitorResult, PrStatus } from './models.js';
 import type { PrStatusReader } from './githubReader.js';
@@ -98,6 +99,15 @@ export async function monitorPr(deps: MonitorPrDeps): Promise<MonitorResult> {
     return { outcome: 'escalated', pr, reasons: escalations.flatMap((e) => e.reasons) };
   }
 
+  // An earlier attempt stopped for want of a /code-review and is waiting on a
+  // person (or they rejected it): don't redo the same attempt every tick.
+  const missingReviewId = `pr-missing-review:${pr.repo}#${pr.number}`;
+  const priorMissingReview = await approvals.get(missingReviewId);
+  if (priorMissingReview && priorMissingReview.status !== 'approved') {
+    await audit.log('pr_monitor_no_action', { reason: 'awaiting manual follow-up on a missing code review' });
+    return { outcome: 'escalated', pr, reasons: ['awaiting manual follow-up on a missing code review'] };
+  }
+
   // Every unresolved comment is straightforward — attempt to implement the fix
   // directly on the existing PR branch (no new branch, no new PR).
   const wtManager = deps.worktreeManagerFactory ? deps.worktreeManagerFactory() : new WorktreeManager(deps.repoLocalPath);
@@ -111,6 +121,7 @@ out on the PR's own branch. Follow this order strictly:
 1. INSPECT FIRST. Read the current code before changing anything.
 2. Implement ONLY what the feedback below asks for. Do not expand scope.
 3. Run the project's test suite, lint, typecheck, and build and fix any failures.
+${codeReviewStep(4, worktreePath)}
 
 Hard constraints: same as before — no git commit/push/branch changes (the orchestrator
 handles that), no CI/env/lockfile/migration changes, no Slack/Jira/GitHub writes, no
@@ -144,6 +155,26 @@ Report back: what you changed, and the test/lint/typecheck/build results.
     await audit.log('pr_monitor_escalated', { reason: outcome.summary });
     return { outcome: 'escalated', pr, reasons: [outcome.summary], worktreePath };
   }
+
+  // Same rule as a new ticket: nothing is pushed to a PR without a /code-review.
+  const review = await consumeCodeReviewRecord(worktreePath);
+  if (!review.ok) {
+    await approvals.file({
+      id: missingReviewId,
+      source: 'pr_monitoring',
+      action: 'manual_review_missing_code_review',
+      target: `${pr.repo}#${pr.number}`,
+      targetUrl: pr.url,
+      context: { pr, worktreePath },
+      reasoning: review.reason,
+      riskLevel: 'medium',
+      consequenceIfApproved: 'Nothing automated happens — the change stays uncommitted in the worktree.',
+      recommendedAction: `Run /code-review on ${worktreePath}, then push the fix for ${pr.repo}#${pr.number} manually.`,
+    });
+    await audit.log('pr_monitor_escalated', { reason: 'missing code review' });
+    return { outcome: 'escalated', pr, reasons: [review.reason], worktreePath };
+  }
+  await audit.log('pr_monitor_code_review', { findings: review.record.findings, summary: describeCodeReview(review.record) });
 
   const checks = await runChecks(worktreePath, deps.checkCommands ?? DEFAULT_COMMANDS, undefined, deps.checkRetries);
   await audit.log('pr_monitor_checks_run', { results: checks.map((c) => ({ name: c.name, passed: c.passed })) });
