@@ -2,8 +2,10 @@
 // hours, or just "reviews most of the day"), and this turns it into a full, believable day of
 // Jira worklogs, the same way every time, so the logging rules never have to be repeated:
 //
-// - every working day totals a little over 8h, never exactly 8h, and not the same total as the
-//   day before in the plan (a random total between DAY_MIN and DAY_MAX, in 5-minute steps);
+// - every working day lands near 8h, a little over or under but never exactly 8h, and not the
+//   same total as the day before (a random total between DAY_MIN and DAY_MAX, 5-minute steps);
+// - over a week the days average about 8h: a day after long ones comes out shorter, and the
+//   other way round (the earlier days of that Mon-Fri week, from Jira and the plan, are counted);
 // - entries with a fixed duration ("2h on the team meeting") keep it; "flex" entries share what's
 //   left by weight, with jitter, so no two days split the same way;
 // - every entry needs a real description (MIN_NOTE_WORDS words or more), not a one-word label;
@@ -12,8 +14,10 @@
 //
 // Pure functions only (randomness is injected), so the rules are tested; the CLI does the I/O.
 
-export const DAY_MIN_MINUTES = 8 * 60 + 5; // 8h05
-export const DAY_MAX_MINUTES = 8 * 60 + 55; // 8h55
+export const DAY_MIN_MINUTES = 7 * 60 + 35; // 7h35
+export const DAY_MAX_MINUTES = 8 * 60 + 25; // 8h25
+export const DAY_TARGET_MINUTES = 8 * 60; // what a week of days averages to
+const SPREAD_MINUTES = 20; // how far a day may drift from where the week needs it
 export const MIN_NOTE_WORDS = 12;
 export const STEP_MINUTES = 5;
 export const FLEX_MIN_MINUTES = 15;
@@ -98,6 +102,41 @@ export function validateDayPlan(plan: DayPlan): string[] {
   return problems;
 }
 
+/** What the days around this one came to, for keeping the totals varied and the week near 8h. */
+export interface DayContext {
+  /** Total of the working day before (so this one differs). */
+  previousTotal?: number;
+  /** Earlier working days of the same Mon-Fri week: how many, and their total minutes. */
+  week?: { days: number; minutes: number };
+  /** Most minutes a day per Jira project (config workLog.projectDayCaps). */
+  caps?: Record<string, number>;
+}
+
+/**
+ * The day's total: random, in 5-minute steps, within DAY_MIN..DAY_MAX and not below `low`; near
+ * whatever brings the week's average back to 8h; never exactly 8h or the previous day's total.
+ */
+export function pickDayTotal(low: number, rng: Rng, context: DayContext = {}): number {
+  const { week, previousTotal } = context;
+  const behind = week && week.days ? DAY_TARGET_MINUTES * week.days - week.minutes : 0;
+  const ideal = Math.min(DAY_MAX_MINUTES, Math.max(DAY_MIN_MINUTES, DAY_TARGET_MINUTES + behind));
+  let from = Math.max(low, roundUpToStep(ideal - SPREAD_MINUTES), DAY_MIN_MINUTES);
+  let to = Math.min(DAY_MAX_MINUTES, roundToStep(ideal + SPREAD_MINUTES));
+  if (from > to) [from, to] = [Math.max(low, DAY_MIN_MINUTES), DAY_MAX_MINUTES];
+  const options: number[] = [];
+  for (let m = from; m <= to; m += STEP_MINUTES) options.push(m);
+  const avoid = (m: number) => m !== DAY_TARGET_MINUTES && m !== previousTotal;
+  let pool = options.filter(avoid);
+  if (!pool.length) {
+    // Nothing else near where the week needs it: anywhere in the day's range rather than 8h00.
+    for (let m = roundUpToStep(Math.max(low, DAY_MIN_MINUTES)); m <= DAY_MAX_MINUTES; m += STEP_MINUTES) {
+      if (avoid(m)) pool.push(m);
+    }
+  }
+  if (!pool.length) pool = options;
+  return pool[Math.floor(rng() * pool.length)]!;
+}
+
 /**
  * Works out the minutes of every flex entry and the start time of every entry, so the day
  * (including what's already in Jira) lands on a random total between DAY_MIN and DAY_MAX.
@@ -107,7 +146,7 @@ export function resolveDayPlan(
   input: DayPlan,
   existing: ExistingWorklog[],
   rng: Rng,
-  avoidTotal?: number,
+  context: DayContext = {},
 ): DayPlan {
   const problems = validateDayPlan(input);
   if (problems.length) throw new Error(problems.join('\n'));
@@ -122,6 +161,15 @@ export function resolveDayPlan(
       .filter((e) => !e.logged)
       .map((e) => (e.flex ? { ...e, minutes: undefined, start: undefined } : { ...e })),
   };
+  const cappedFlex = marked
+    .filter((e) => !e.logged && (e.minutes === undefined || e.flex) && context.caps?.[projectOf(e.ticket)] !== undefined)
+    .map((e) => e.ticket);
+  if (cappedFlex.length) {
+    throw new Error(
+      `${input.date}: ${cappedFlex.join(', ')} ${cappedFlex.length === 1 ? 'is' : 'are'} on a project with a daily cap, ` +
+        'so give ' + (cappedFlex.length === 1 ? 'it' : 'them') + ' fixed minutes that fit and let other work be the flex.',
+    );
+  }
   const logged = marked.filter((e) => e.logged);
   // Everything is in Jira already: nothing left to work out (and nothing to re-check against).
   if (!plan.entries.length) return { ...input, entries: marked, resolved: true };
@@ -140,7 +188,13 @@ export function resolveDayPlan(
           'Leave the minutes off at least one entry so it can take up the rest.',
       );
     }
-    if (total === avoidTotal) {
+    if (total === DAY_TARGET_MINUTES) {
+      throw new Error(
+        `${plan.date} adds up to exactly ${formatDuration(total)}. ` +
+          'Leave the minutes off at least one entry so the total can vary.',
+      );
+    }
+    if (total === context.previousTotal) {
       throw new Error(
         `${plan.date} adds up to ${formatDuration(total)}, the same as the day before. ` +
           'Leave the minutes off at least one entry so the total can vary.',
@@ -156,19 +210,16 @@ export function resolveDayPlan(
           `under ${formatDuration(DAY_MAX_MINUTES)}`,
       );
     }
-    const low = Math.max(DAY_MIN_MINUTES, roundUpToStep(lowest));
-    let target = randomStep(low, DAY_MAX_MINUTES, rng);
-    // Not the same total as the day before (when there's any other choice).
-    for (let tries = 0; target === avoidTotal && low < DAY_MAX_MINUTES && tries < 20; tries++) {
-      target = randomStep(low, DAY_MAX_MINUTES, rng);
-    }
-    if (target === avoidTotal && low < DAY_MAX_MINUTES) target = target === low ? target + STEP_MINUTES : low;
+    const target = pickDayTotal(roundUpToStep(lowest), rng, context);
     const shares = splitByWeight(target - already - fixed, flex.map((e) => e.weight ?? 1), rng);
     let next = 0;
     entries = plan.entries.map((e) =>
       e.minutes === undefined ? { ...e, minutes: shares[next++]!, flex: true } : { ...e },
     );
   }
+
+  const overCap = capProblems({ ...plan, entries }, existing, context.caps);
+  if (overCap.length) throw new Error(overCap.join('\n'));
 
   // One after another from the start of the day with a short random gap (a coffee, a context
   // switch), in the free time around anything already logged; never overlapping, never past midnight.
@@ -210,6 +261,36 @@ export const overlapsJira = (entry: PlanEntry, existing: ExistingWorklog[]) => {
       to > fromClock(w.start),
   );
 };
+
+export const projectOf = (ticket: string) => ticket.split('-')[0]!;
+
+/**
+ * Projects whose time that day (Jira plus the entries not in Jira yet) goes over its cap
+ * (minutes per day, by Jira project key, e.g. { UNLSD: 245 }).
+ */
+export function capProblems(plan: DayPlan, existing: ExistingWorklog[], caps: Record<string, number> = {}): string[] {
+  const byProject = new Map<string, number>();
+  const adding = new Set<string>(); // projects the plan still adds time to
+  const add = (ticket: string, minutes: number) => {
+    const project = projectOf(ticket);
+    byProject.set(project, (byProject.get(project) ?? 0) + minutes);
+  };
+  existing.forEach((w) => add(w.ticket, w.minutes));
+  plan.entries
+    .filter((e) => !e.logged && !isInJira(e, existing))
+    .forEach((e) => {
+      add(e.ticket, e.minutes ?? 0);
+      adding.add(projectOf(e.ticket));
+    });
+  // Only when the plan adds to it: a day already over in Jira (before the cap) isn't blocked.
+  return [...byProject]
+    .filter(([project, minutes]) => adding.has(project) && caps[project] !== undefined && minutes > caps[project]!)
+    .map(
+      ([project, minutes]) =>
+        `${plan.date}: ${project} comes to ${formatDuration(minutes)}, more than its ${formatDuration(caps[project]!)} a day. ` +
+        `Give the ${project} entries fixed minutes that fit, and let other work take the rest.`,
+    );
+}
 
 /** The day's total: what's in Jira plus the entries not in Jira yet. */
 export const dayTotal = (plan: DayPlan, existing: ExistingWorklog[] = []) =>

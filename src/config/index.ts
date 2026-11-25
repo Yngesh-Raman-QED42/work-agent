@@ -131,6 +131,13 @@ const ConfigSchema = z.object({
     // you'd type by hand. Per-machine fact, not something to detect/guess.
     terminalOs: z.enum(['ubuntu', 'mac', 'windows']).default('ubuntu'),
   }),
+  workLog: z
+    .object({
+      // Most a day may hold per Jira project, in minutes, e.g. { "UNLSD": 245 } for "at most
+      // 4h05 a day on UNLSD". `log-day` refuses a day that goes over (src/agents/workLog/dayPlan.ts).
+      projectDayCaps: z.record(z.string(), z.number().int().positive()).default({}),
+    })
+    .optional(),
 });
 
 export type WorkAgentConfig = z.infer<typeof ConfigSchema>;

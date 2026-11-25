@@ -175,6 +175,7 @@ async function cmdLogDay(args: string[]) {
       rng: Math.random,
       utcOffsetOn,
       print: (line: string) => console.log(line),
+      projectDayCaps: loadConfig().workLog?.projectDayCaps ?? {},
     };
     if (args.includes('--apply')) await applyPlan(file, deps);
     else {

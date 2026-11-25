@@ -1,6 +1,8 @@
 import {
   DAY_MAX_MINUTES,
   DAY_MIN_MINUTES,
+  DAY_TARGET_MINUTES,
+  capProblems,
   dayTotal,
   type DayPlan,
   type ExistingWorklog,
@@ -30,6 +32,8 @@ export interface LogDayDeps {
   /** This machine's UTC offset in minutes on a date (e.g. 330 for +0530), for Jira's "started". */
   utcOffsetOn(date: string): number;
   print(line: string): void;
+  /** Most minutes a day per Jira project (config workLog.projectDayCaps). */
+  projectDayCaps?: Record<string, number>;
 }
 
 const REPREVIEW = 'Remove "resolved" from the day and preview again.';
@@ -50,9 +54,12 @@ export function toExisting(worklogs: OwnWorklog[], utcOffsetMinutes: number): Ex
 }
 
 /** Problems with a day as planned against what Jira has now: outside the range, or overlapping. */
-function dayProblems(day: DayPlan, existing: ExistingWorklog[]): string[] {
-  const problems: string[] = [];
+function dayProblems(day: DayPlan, existing: ExistingWorklog[], caps?: Record<string, number>): string[] {
+  const problems: string[] = [...capProblems(day, existing, caps)];
   const total = dayTotal(day, existing);
+  if (total === DAY_TARGET_MINUTES && day.entries.some((e) => !e.logged && !isInJira(e, existing))) {
+    problems.push(`${day.date} comes to exactly ${formatDuration(total)} with what's in Jira now.`);
+  }
   if (total > DAY_MAX_MINUTES || total < DAY_MIN_MINUTES) {
     problems.push(
       `${day.date} comes to ${formatDuration(total)} with what's in Jira now ` +
@@ -66,14 +73,33 @@ function dayProblems(day: DayPlan, existing: ExistingWorklog[]): string[] {
   return problems;
 }
 
-function printDay(day: DayPlan, existing: ExistingWorklog[], print: (l: string) => void) {
+function printDay(day: DayPlan, existing: ExistingWorklog[], print: (l: string) => void, caps?: Record<string, number>) {
   print(`\n${day.date}  total ${formatDuration(dayTotal(day, existing))}`);
   for (const w of existing) print(`  ${w.start}  ${formatDuration(w.minutes).padEnd(7)} ${w.ticket}  (already in Jira)`);
   for (const e of day.entries.filter((entry) => !entry.logged && !isInJira(entry, existing))) {
     print(`  ${e.start ?? '--:--'}  ${formatDuration(e.minutes ?? 0).padEnd(7)} ${e.ticket}`);
     print(`         ${e.note}`);
   }
-  for (const problem of dayProblems(day, existing)) print(`  ! ${problem} ${REPREVIEW}`);
+  for (const problem of dayProblems(day, existing, caps)) print(`  ! ${problem} ${REPREVIEW}`);
+}
+
+/** Monday to the day before `date`, in its week (none for a Monday). */
+export function earlierWeekdays(date: string): string[] {
+  const day = new Date(`${date}T12:00:00Z`);
+  const weekday = (day.getUTCDay() + 6) % 7; // Monday = 0
+  return Array.from({ length: Math.min(weekday, 5) }, (_, i) =>
+    new Date(day.getTime() - (weekday - i) * 86_400_000).toISOString().slice(0, 10),
+  );
+}
+
+/** The `count` weekdays before `date`, most recent first (across weekends). */
+export function previousWeekdays(date: string, count: number): string[] {
+  const out: string[] = [];
+  for (let t = Date.parse(`${date}T12:00:00Z`) - 86_400_000; out.length < count; t -= 86_400_000) {
+    const day = new Date(t);
+    if (day.getUTCDay() !== 0 && day.getUTCDay() !== 6) out.push(day.toISOString().slice(0, 10));
+  }
+  return out;
 }
 
 /** The file's shape and every day's rules; checked by both preview and apply. */
@@ -91,14 +117,48 @@ function checkFile(file: PlanFile) {
 export async function previewPlan(file: PlanFile, deps: LogDayDeps): Promise<PlanFile> {
   checkFile(file);
 
+  // Totals of days worked out so far (the plan's) and read from Jira, by date.
+  const totals = new Map<string, number>();
+  const cache = new Map<string, ExistingWorklog[]>();
+  const existingOn = async (date: string) => {
+    if (!cache.has(date)) cache.set(date, await deps.existingOn(date));
+    return cache.get(date)!;
+  };
+  const totalOn = async (date: string) =>
+    totals.get(date) ?? (await existingOn(date)).reduce((sum, w) => sum + w.minutes, 0);
+
   const days: DayPlan[] = [];
-  let previousTotal: number | undefined;
   for (const day of [...file.days].sort((a, b) => a.date.localeCompare(b.date))) {
-    const existing = await deps.existingOn(day.date);
-    const resolved = day.resolved ? day : resolveDayPlan(day, existing, deps.rng, previousTotal);
-    previousTotal = dayTotal(resolved, existing);
+    const existing = await existingOn(day.date);
+    // Earlier working days of the same week that have time logged (a day off isn't "owed"). Each
+    // counts only by how far it drifted from 8h within a normal day's range, so a half day off
+    // isn't paid back by every later day.
+    const week = { days: 0, minutes: 0 };
+    for (const date of earlierWeekdays(day.date)) {
+      const minutes = await totalOn(date);
+      if (minutes > 0) {
+        week.days += 1;
+        week.minutes += Math.min(DAY_MAX_MINUTES, Math.max(DAY_MIN_MINUTES, minutes));
+      }
+    }
+    // The last working day with time logged (up to a week back, across weekends and days off).
+    let previousTotal: number | undefined;
+    for (const date of previousWeekdays(day.date, 7)) {
+      const minutes = await totalOn(date);
+      if (minutes > 0) {
+        previousTotal = minutes;
+        break;
+      }
+    }
+    const context = {
+      previousTotal,
+      week,
+      caps: deps.projectDayCaps,
+    };
+    const resolved = day.resolved ? day : resolveDayPlan(day, existing, deps.rng, context);
+    totals.set(day.date, dayTotal(resolved, existing));
     days.push(resolved);
-    printDay(resolved, existing, deps.print);
+    printDay(resolved, existing, deps.print, deps.projectDayCaps);
   }
   const out = { days };
   await deps.save(out);
@@ -128,7 +188,7 @@ export async function applyPlan(file: PlanFile, deps: LogDayDeps): Promise<void>
     const existing = await deps.existingOn(day.date);
     // Only when something is still to be posted; finishing local records needs no re-check.
     if (day.entries.some((e) => !e.logged)) {
-      const problems = dayProblems(day, existing);
+      const problems = dayProblems(day, existing, deps.projectDayCaps);
       if (problems.length) throw new Error(`${problems.join(' ')} Nothing logged for that day. ${REPREVIEW}`);
     }
 

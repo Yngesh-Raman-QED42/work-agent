@@ -116,8 +116,13 @@ The person only tells you **what** they worked on, per day: tickets, rough hours
 it, or a vague "mostly PR reviews". They should never have to repeat **how** to log it. These
 rules always apply, unasked:
 
-- Every working day adds up to a little over 8h, never exactly 8h, and differently each day.
-  The tool picks a random total between 8h05 and 8h55, counting anything already in Jira that day.
+- Every working day lands near 8h, a little over or under, never exactly 8h, and differently each
+  day: the tool picks a random total between 7h35 and 8h25, counting anything already in Jira that
+  day. Over a Mon-Fri week the days average about 8h: after long days it picks a shorter one, and
+  the other way round (it reads the week's earlier days from Jira and the plan).
+- Per-project daily caps from `work-agent.config.json` (`workLog.projectDayCaps`, minutes) are hard
+  limits; currently UNLSD is at most 4h05 a day. Give a capped project's entries fixed minutes that
+  fit, and let other work be the flex that fills the day.
 - Durations the person gives ("2h on QGP-487", "30 min DSM") are fixed. Everything else is
   "flex": leave `minutes` off, set a rough `weight` for its share, and the tool fills the rest of the
   day with jitter, so no two days split the same way.
@@ -141,15 +146,15 @@ rules always apply, unasked:
 **Recurring tickets** (confirm a key's summary in Jira before using it): `UNLSD-10` UNLSD daily
 standup (DSM) and UNLSD peer/team calls, usually 30m for DSM; `QGP-486` JavaScript team meeting,
 about 1h a day, varied (45m to 1h15); `QGP-487` team / engineering practice meeting; `QDP-123`
-Fun Friday. When the person groups things ("4 to 5h of UNLSD including DSM and peer calls"), keep
-that group's total inside the range they gave.
+Fun Friday. When the person groups things ("UNLSD reviews including DSM and peer calls"), keep
+that group's total inside the range they gave and under any project cap.
 
 **Steps:**
 1. Write the plan in the session scratchpad, all days in one file:
    `{"days":[{"date":"2026-11-24","entries":[{"ticket":"QGP-487","minutes":120,"note":"..."},{"ticket":"UNLSD-103","weight":2,"note":"..."}]}]}`
 2. `work-agent log-day <plan.json>` previews: it checks the rules, reads what's already in Jira,
    works out the minutes and start times, prints the days and saves them into the file. Fix
-   anything it refuses (short description, weekend, overfull day) and preview again.
+   anything it refuses (short description, weekend, overfull day, project over its cap) and preview again.
 3. `work-agent log-day <plan.json> --apply` logs exactly the preview to Jira (and the local
    record). It marks each entry as it goes, so a failed run can be re-run without double logging.
    When the person asked you to log time, apply straight after the preview; ask first only if

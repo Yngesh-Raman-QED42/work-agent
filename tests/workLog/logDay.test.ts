@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyPlan, localParts, previewPlan, type LogDayDeps } from '../../src/agents/workLog/logDay.js';
+import { applyPlan, earlierWeekdays, localParts, previousWeekdays, previewPlan, type LogDayDeps } from '../../src/agents/workLog/logDay.js';
 import type { ExistingWorklog, PlanFile } from '../../src/agents/workLog/dayPlan.js';
 import { MockJiraWorklogWriter } from '../../src/integrations/jira/worklogWriter.js';
 
@@ -66,7 +66,7 @@ describe('log-day', () => {
   it('stops a day that something else has filled since the preview', async () => {
     const previewed = await previewPlan(plan(), deps().d);
     const { d, writer } = deps([{ ticket: 'QGP-486', minutes: 300, start: '09:00' }]);
-    await expect(applyPlan(previewed, d)).rejects.toThrow(/comes to 13h 30m/);
+    await expect(applyPlan(previewed, d)).rejects.toThrow(/comes to 13h/);
     expect(writer.logged).toEqual([]);
   });
 });
@@ -126,5 +126,19 @@ describe('log-day after a stopped run', () => {
     const day = again.days[0]!;
     expect(day.entries.find((e) => e.ticket === first.ticket)!.logged).toBe(true);
     expect(day.entries.filter((e) => !e.logged).map((e) => e.ticket)).toEqual(['UNLSD-103']);
+  });
+});
+
+describe('earlierWeekdays', () => {
+  it('lists Monday up to the day before, within the week', () => {
+    expect(earlierWeekdays('2026-11-23')).toEqual([]);
+    expect(earlierWeekdays('2026-11-25')).toEqual(['2026-11-23', '2026-11-24']);
+    expect(earlierWeekdays('2026-11-27')).toEqual(['2026-11-23', '2026-11-24', '2026-11-25', '2026-11-26']);
+  });
+});
+
+describe('previousWeekdays', () => {
+  it('goes back across the weekend', () => {
+    expect(previousWeekdays('2026-11-23', 2)).toEqual(['2026-11-20', '2026-11-19']);
   });
 });

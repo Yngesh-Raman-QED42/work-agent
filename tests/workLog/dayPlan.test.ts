@@ -8,6 +8,8 @@ import {
   resolveDayPlan,
   splitByWeight,
   validateDayPlan,
+  pickDayTotal,
+  capProblems,
   type DayPlan,
 } from '../../src/agents/workLog/dayPlan.js';
 
@@ -54,7 +56,7 @@ describe('validateDayPlan', () => {
 });
 
 describe('resolveDayPlan', () => {
-  it('lands every day between 8h05 and 8h55, never exactly 8h, keeping fixed entries', () => {
+  it('lands every day between 7h35 and 8h25, never exactly 8h, keeping fixed entries', () => {
     const totals = new Set<number>();
     for (const r of [0, 0.13, 0.5, 0.77, 0.99]) {
       const day = resolveDayPlan(monday, [], seq(r, 0.3, 0.6, 0.9));
@@ -123,7 +125,7 @@ describe('resolveDayPlan, after a preview', () => {
 
   it('does not repeat the previous day total when it can avoid it', () => {
     const a = dayTotal(resolveDayPlan(monday, [], seq(0.5)));
-    const b = dayTotal(resolveDayPlan(monday, [], seq(0.5), a));
+    const b = dayTotal(resolveDayPlan(monday, [], seq(0.5), { previousTotal: a }));
     expect(b).not.toBe(a);
   });
 
@@ -134,5 +136,90 @@ describe('resolveDayPlan, after a preview', () => {
       const from = fromClock(e.start!);
       expect(from + e.minutes! <= 11 * 60 || from >= 13 * 60).toBe(true);
     }
+  });
+});
+
+describe('pickDayTotal', () => {
+  it('stays near 8h, never exactly 8h', () => {
+    for (const r of [0, 0.25, 0.5, 0.75, 0.99]) {
+      const total = pickDayTotal(0, () => r);
+      expect(total).toBeGreaterThanOrEqual(460);
+      expect(total).toBeLessThanOrEqual(500);
+      expect(total).not.toBe(480);
+    }
+  });
+
+  it('goes under 8h after long days in the week, and over after short ones', () => {
+    const afterLong = pickDayTotal(0, () => 0.99, { week: { days: 2, minutes: 2 * 505 } });
+    const afterShort = pickDayTotal(0, () => 0, { week: { days: 2, minutes: 2 * 455 } });
+    expect(afterLong).toBeLessThan(480);
+    expect(afterShort).toBeGreaterThan(480);
+  });
+
+  it('keeps a week of planned days averaging about 8h', () => {
+    let rng = 0.1;
+    const next = () => (rng = (rng * 7.3 + 0.37) % 1);
+    const week = { days: 0, minutes: 0 };
+    for (let i = 0; i < 5; i++) {
+      const total = pickDayTotal(0, next, { week: { ...week } });
+      week.days += 1;
+      week.minutes += total;
+    }
+    expect(Math.abs(week.minutes / 5 - 480)).toBeLessThanOrEqual(10);
+  });
+});
+
+describe('project day caps', () => {
+  it('refuses a day where a project goes over its cap', () => {
+    const plan: DayPlan = {
+      ...monday,
+      entries: [
+        { ticket: 'UNLSD-10', minutes: 30, note: note('Daily standup with the team on status and blockers') },
+        { ticket: 'UNLSD-101', minutes: 230, note: note('PR #27 review') },
+        { ticket: 'QED42OPSIN-82', note: note('Slack capacity PR work') },
+      ],
+    };
+    expect(() => resolveDayPlan(plan, [], seq(0.5), { caps: { UNLSD: 245 } })).toThrow(/UNLSD comes to 4h 20m/);
+    expect(capProblems({ ...plan, entries: plan.entries.slice(0, 1) }, [{ ticket: 'UNLSD-9', minutes: 240, start: '10:00' }], { UNLSD: 245 })).toHaveLength(1);
+  });
+
+  it('accepts a day within the cap', () => {
+    const plan: DayPlan = {
+      ...monday,
+      entries: [
+        { ticket: 'UNLSD-10', minutes: 30, note: note('Daily standup with the team on status and blockers') },
+        { ticket: 'UNLSD-101', minutes: 215, note: note('PR #27 review') },
+        { ticket: 'QED42OPSIN-82', note: note('Slack capacity PR work') },
+      ],
+    };
+    expect(() => resolveDayPlan(plan, [], seq(0.5), { caps: { UNLSD: 245 } })).not.toThrow();
+  });
+});
+
+describe('day rules, edge cases', () => {
+  it('never lands on exactly 8h, even when the week points there', () => {
+    expect(pickDayTotal(480, () => 0, { week: { days: 1, minutes: 500 } })).not.toBe(480);
+  });
+
+  it('refuses a flex entry on a capped project, rather than failing at random', () => {
+    expect(() => resolveDayPlan(monday, [], seq(0.5), { caps: { UNLSD: 245 } })).toThrow(/fixed minutes that fit/);
+  });
+
+  it('does not block a day that Jira already had over the cap when the plan adds nothing to it', () => {
+    const plan: DayPlan = { ...monday, entries: [monday.entries[1]!] };
+    expect(capProblems(plan, [{ ticket: 'UNLSD-9', minutes: 270, start: '10:00' }], { UNLSD: 245 })).toEqual([]);
+  });
+});
+
+describe('exactly 8h with fixed entries', () => {
+  it('refuses an all-fixed day of exactly 8h00', () => {
+    const plan: DayPlan = {
+      ...monday,
+      entries: [
+        { ticket: 'QGP-487', minutes: 240, note: note('Engineering practice meeting') },
+        { ticket: 'UNLSD-101', minutes: 240, note: note('PR #27 review') },
+      ],
+    };
+    expect(() => resolveDayPlan(plan, [], seq(0.5))).toThrow(/exactly 8h/);
   });
 });
