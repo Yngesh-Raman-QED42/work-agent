@@ -8,7 +8,10 @@ import { generateWeeklySummary } from './agents/weeklySummary/runbook.js';
 import { ApprovalsStore } from './shared/approvals.js';
 import { buildConnectors, type ConnectorMode } from './integrations/factory.js';
 import { logTime } from './agents/workLog/timeEntry.js';
-import { LiveJiraWorklogWriter } from './integrations/jira/worklogWriter.js';
+import { LiveJiraWorklogReader, LiveJiraWorklogWriter } from './integrations/jira/worklogWriter.js';
+import { applyPlan, localParts, previewPlan, toExisting } from './agents/workLog/logDay.js';
+import type { PlanFile } from './agents/workLog/dayPlan.js';
+import { readFile, writeFile } from 'node:fs/promises';
 import { executeApprovedAction } from './shared/executeApproval.js';
 import { LiveJiraConnector } from './integrations/jira/live.js';
 import { AutonomyPolicy } from './agents/engineeringExecution/policy.js';
@@ -138,6 +141,49 @@ async function cmdLogTime(args: string[]) {
       console.error(`Local entry saved, but the Jira write failed: ${err}`);
       process.exit(1);
     }
+  }
+}
+
+/**
+ * A whole day (or several) of worklogs from a plan file: see src/agents/workLog/dayPlan.ts for
+ * the rules (8h+ varying totals, real descriptions, entries spread through the day) and
+ * CLAUDE.md for how a session writes the plan. Without --apply it only previews and saves the
+ * worked-out minutes into the file; --apply logs exactly that preview to Jira.
+ */
+async function cmdLogDay(args: string[]) {
+  const path = args.find((a) => !a.startsWith('--'));
+  if (!path) {
+    console.error('Usage: work-agent log-day <plan.json> [--apply]');
+    process.exit(1);
+  }
+  try {
+    const file = JSON.parse(await readFile(path, 'utf8')) as PlanFile;
+    // The offset on that date (not today's), in case of a daylight saving change in between.
+    const utcOffsetOn = (date: string) => -new Date(`${date}T12:00:00`).getTimezoneOffset();
+    const reader = new LiveJiraWorklogReader();
+    const writer = new LiveJiraWorklogWriter();
+    const db = getDb();
+    const deps = {
+      existingOn: async (date: string) =>
+        toExisting(
+          await reader.ownWorklogsOn(date, (started) => localParts(started, utcOffsetOn(date)).date === date),
+          utcOffsetOn(date),
+        ),
+      writer,
+      recordLocally: (e: { date: string; minutes: number; jiraKey: string; note: string }) => logTime(db, e),
+      save: (plan: PlanFile) => writeFile(path, JSON.stringify(plan, null, 2) + '\n'),
+      rng: Math.random,
+      utcOffsetOn,
+      print: (line: string) => console.log(line),
+    };
+    if (args.includes('--apply')) await applyPlan(file, deps);
+    else {
+      await previewPlan(file, deps);
+      console.log(`\nSaved to ${path}. Run again with --apply to log exactly this.`);
+    }
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(1);
   }
 }
 
@@ -278,6 +324,9 @@ async function main() {
     case 'log-time':
       await cmdLogTime(rest);
       break;
+    case 'log-day':
+      await cmdLogDay(rest);
+      break;
     case 'cleanup-asset-branches':
       await cmdCleanupAssetBranches(rest);
       break;
@@ -300,7 +349,7 @@ async function main() {
     }
     default:
       console.error(
-        'Usage: work-agent <run [--mode auto|mock|live]|end-of-day|weekly-summary|status|log-time (--minutes <n>|--hours <n>) [--ticket KEY] [--jira]|exec-start <KEY>|exec-finish <KEY> (--summary "..."|--failed "...")|cleanup-asset-branches [--dry-run]|approvals list|approvals approve <id>|approvals reject <id>>',
+        'Usage: work-agent <run [--mode auto|mock|live]|end-of-day|weekly-summary|status|log-time (--minutes <n>|--hours <n>) [--ticket KEY] [--jira]|log-day <plan.json> [--apply]|exec-start <KEY>|exec-finish <KEY> (--summary "..."|--failed "...")|cleanup-asset-branches [--dry-run]|approvals list|approvals approve <id>|approvals reject <id>>',
       );
       process.exit(1);
   }

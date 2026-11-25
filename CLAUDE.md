@@ -110,6 +110,52 @@ the estimation approach itself is proven good).
 7. Report it directly in this session — a short breakdown, a total, and the 2-3 biggest sources of
    uncertainty behind the buffer. That's the whole deliverable for now.
 
+## If asked to log time: `work-agent log-day`, and the rules are already decided
+
+The person only tells you **what** they worked on, per day: tickets, rough hours for some of
+it, or a vague "mostly PR reviews". They should never have to repeat **how** to log it. These
+rules always apply, unasked:
+
+- Every working day adds up to a little over 8h, never exactly 8h, and differently each day.
+  The tool picks a random total between 8h05 and 8h55, counting anything already in Jira that day.
+- Durations the person gives ("2h on QGP-487", "30 min DSM") are fixed. Everything else is
+  "flex": leave `minutes` off, set a rough `weight` for its share, and the tool fills the rest of the
+  day with jitter, so no two days split the same way.
+- Every entry gets a real description (12+ words): which PR/feature, what was actually done
+  (reviewed X against Figma, re-checked fixes, tested Y, merged Z), and the outcome. Never just a
+  label like "DSM" or "PR review". Write as the person; no mentions of AI, Claude or automation,
+  and no em dashes (commas and periods instead).
+- Entries are laid out one after another through the day (from about 10:00), not stacked at one time.
+
+**Fill in what they don't remember from evidence, not guesses:**
+- PR reviews: the person's review and comment timestamps per day (convert to IST, +0530) on the
+  repos they review, e.g. `gh api repos/<repo>/pulls/<n>/reviews` and `/comments`, filtered to
+  their login. Log each PR review on that PR's own Jira ticket (the key in the PR title; for a PR
+  covering several, the first one), describing what that day's pass covered (first review,
+  re-check of fixes, approval).
+- Their own PRs: commits, review rounds, merges and base changes per day (`gh api
+  repos/<repo>/issues/<n>/timeline`, `/pulls/<n>/commits`), logged on each PR's ticket.
+- Already logged: the tool reads Jira itself, and past entries (same JQL as
+  `LiveJiraWorklogReader`) show the person's usual tickets and description style.
+
+**Recurring tickets** (confirm a key's summary in Jira before using it): `UNLSD-10` UNLSD daily
+standup (DSM) and UNLSD peer/team calls, usually 30m for DSM; `QGP-486` JavaScript team meeting,
+about 1h a day, varied (45m to 1h15); `QGP-487` team / engineering practice meeting; `QDP-123`
+Fun Friday. When the person groups things ("4 to 5h of UNLSD including DSM and peer calls"), keep
+that group's total inside the range they gave.
+
+**Steps:**
+1. Write the plan in the session scratchpad, all days in one file:
+   `{"days":[{"date":"2026-11-24","entries":[{"ticket":"QGP-487","minutes":120,"note":"..."},{"ticket":"UNLSD-103","weight":2,"note":"..."}]}]}`
+2. `work-agent log-day <plan.json>` previews: it checks the rules, reads what's already in Jira,
+   works out the minutes and start times, prints the days and saves them into the file. Fix
+   anything it refuses (short description, weekend, overfull day) and preview again.
+3. `work-agent log-day <plan.json> --apply` logs exactly the preview to Jira (and the local
+   record). It marks each entry as it goes, so a failed run can be re-run without double logging.
+   When the person asked you to log time, apply straight after the preview; ask first only if
+   something is genuinely unclear (which ticket, or a day with no evidence and nothing said about it).
+4. Report each day's entries and total.
+
 ## Hard constraints — never, regardless of what the ticket asks for
 
 - Never merge a PR. Never deploy anything.
